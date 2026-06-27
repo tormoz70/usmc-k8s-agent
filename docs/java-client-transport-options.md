@@ -40,13 +40,16 @@ client.apps().deployments().inNamespace("payments").withName("api").scale(3);
 
 - берёт уже сформированный fabric8 `HttpRequest` — это просто `{method, path, query, headers, body}`,
   например `PATCH /apis/apps/v1/namespaces/payments/deployments/api/scale` + тело;
-- кладёт его в конверт команды и шлёт в **request-топик**:
+- кладёт его в конверт команды и шлёт в **request-топик**. `correlation_id` и `reply_topic` идут в
+  **заголовках** Kafka-записи, тело — в JSON:
+
+```text
+Kafka headers: correlation_id=uuid-1, reply_topic=app-42.responses
+```
 
 ```json
 {
   "command_id": "uuid-1",
-  "correlation_id": "uuid-1",
-  "reply_topic": "app-42.responses",
   "type": "k8s.api",
   "http": {
     "method": "PATCH",
@@ -72,8 +75,13 @@ fabric8 сам подхватывает нашу фабрику с classpath.
 против настоящего kube-apiserver** своим `ServiceAccount`'ом (это буквально REST-вызов
 `PATCH /apis/.../scale`). Затем заворачивает HTTP-ответ apiserver'а в response-конверт и шлёт в `reply_topic`.
 
-То есть агент здесь — **прозрачный обратный прокси к kube-apiserver, фронтированный Kafka**.
+То есть агент здесь — **обратный прокси к kube-apiserver, фронтированный Kafka**.
 Он почти ничего не знает про конкретные ресурсы; он гоняет HTTP-запросы.
+
+> Принятые уточнения (см. [java-client-design.md](java-client-design.md)): прокси не «прозрачный», а
+> **фильтрующий** — перед проксированием агент проверяет операцию против **allow-list** (verb × resource/GVK),
+> а ответ **усекает** перед отправкой в Kafka (срез `managedFields`/`last-applied-configuration`, опц.
+> `status`), чтобы не гонять «перегруженные» объекты. Это лечит избыточный трафик, оставляя весь fabric8-DSL.
 
 ### Поток целиком
 
