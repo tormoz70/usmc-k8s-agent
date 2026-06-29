@@ -587,7 +587,225 @@ Blast radius -- это максимальный ущерб от компроме
 
 То есть core-client становится не "носителем cluster-admin credentials", а ограниченным Kafka producer/consumer. Его возможный ущерб ограничен Kafka ACL, allow-list агента и RBAC ServiceAccount агента.
 
-## 12. Почему будущий reconcile можно добавить без изменения Kafka-контракта
+## 12. Informers/watchers
+
+Informers/watchers в агенте -- это не просто "наблюдение за кластером". Это отдельный контур, который даёт агенту локальную картину состояния кластера и поток изменений.
+
+Термины:
+
+- **watcher** -- низкоуровневый stream событий от kube-apiserver: `ADDED`, `MODIFIED`, `DELETED`;
+- **informer** -- обёртка над `LIST + WATCH`, которая сначала загружает начальное состояние, затем держит watch-поток, обновляет локальный cache/indexer и вызывает event handlers.
+
+В MVP informers/watchers используются для четырёх задач:
+
+1. чтение актуального состояния перед выполнением команды;
+2. снижение нагрузки на kube-apiserver;
+3. отслеживание изменений управляемых ресурсов;
+4. подготовка к будущей reconcile-модели.
+
+### 12.1. Чтение актуального состояния перед выполнением команды
+
+Перед выполнением части команд агенту нужно понимать текущее состояние ресурса или связанных ресурсов.
+
+Примеры:
+
+- перед `scale` -- существует ли workload и сколько сейчас реплик;
+- перед `delete` -- существует ли ресурс, чтобы корректно обработать уже достигнутое состояние `NotFound`;
+- перед `logs.collect` -- какие pod-ы подходят под namespace/label selector;
+- перед операцией с Istio -- есть ли уже `VirtualService`, `DestinationRule`, `Gateway` или `AuthorizationPolicy`;
+- перед публикацией результата -- какой `resourceVersion`, `generation` или `observedGeneration` можно вернуть клиенту.
+
+Informer cache позволяет handler-у быстро получить snapshot:
+
+```text
+Kafka command -> handler -> informer cache/indexer -> current resource snapshot
+```
+
+Важное ограничение: informer cache является **eventually consistent**. Он обычно близок к актуальному состоянию, но kube-apiserver остаётся источником истины.
+
+Практическое правило:
+
+- для быстрых проверок, выбора pod-ов, enrich результата и watcher-событий используем informer cache;
+- для критичных write-операций допускается дополнительный live-read в kube-apiserver;
+- если cache ещё не синхронизирован после старта агента, handler либо ждёт sync, либо делает live-read в зависимости от типа команды.
+
+Пример для `logs.collect`:
+
+```text
+informer cache -> найти pod-ы по label selector
+kube-apiserver -> прочитать logs по каждому pod/container
+agent emptyDir -> записать log files
+S3 -> загрузить zip bundle
+```
+
+### 12.2. Снижение нагрузки на kube-apiserver
+
+Без informers агенту пришлось бы часто делать прямые `GET`/`LIST` запросы:
+
+```text
+каждая команда -> GET Deployment
+каждая команда -> LIST Pods
+каждая команда -> GET VirtualService
+каждая команда -> LIST Events
+```
+
+При росте числа команд это создаёт лишнюю нагрузку на kube-apiserver и увеличивает latency.
+
+Informer работает иначе:
+
+```text
+один LIST на старте
+долгоживущий WATCH поток
+локальный cache обновляется событиями
+чтения идут из памяти агента
+```
+
+Пример:
+
+- core часто вызывает `logs.collect` по `namespace=payments`, `labelSelector=app=api`;
+- агент держит informer cache по pod-ам в разрешённых namespaces;
+- он не делает полный `LIST pods` на каждую команду;
+- он берёт pod-ы из локального indexer/cache, затем читает только сами pod logs через kube-apiserver.
+
+Ограничения для MVP:
+
+- watch только ресурсов из allow-list;
+- `Secret` не watch-им полностью;
+- namespaces ограничиваются policy config;
+- не создаём отдельный informer на каждый мелкий запрос, если можно переиспользовать shared informer;
+- следим за cardinality informers, объёмом cache и числом событий, чтобы сам агент не стал источником нагрузки.
+
+### 12.3. Отслеживание изменений управляемых ресурсов
+
+Informers нужны не только перед командой, но и для постоянного watcher-потока в Kafka.
+
+Пример подписки:
+
+```json
+{
+  "schema_version": "v1",
+  "command_id": "cmd-watch-01",
+  "type": "watch.subscribe",
+  "payload": {
+    "subscription_id": "sub-123",
+    "gvk": {
+      "group": "apps",
+      "version": "v1",
+      "kind": "Deployment"
+    },
+    "namespace": "payments",
+    "label_selector": "app=api",
+    "event_filter": ["ADDED", "MODIFIED", "DELETED"]
+  }
+}
+```
+
+Агент запускает или переиспользует informer и публикует изменения в `cluster.events`:
+
+```text
+kube-apiserver -> informer -> k8s-agent -> Kafka cluster.events -> core
+```
+
+Что отслеживаем:
+
+- создание ресурса;
+- изменение `spec`/`status`;
+- удаление ресурса;
+- изменение разрешённых Istio CRD;
+- рестарт pod-а через изменение `containerStatuses.restartCount`;
+- Kubernetes Events, если ресурс и namespace разрешены policy.
+
+Событие в Kafka должно быть компактным: metadata + diff/summary, а не полный resource body.
+
+Пример:
+
+```json
+{
+  "subscription_id": "sub-123",
+  "event_type": "UPDATE",
+  "resource": {
+    "group": "apps",
+    "version": "v1",
+    "kind": "Deployment",
+    "namespace": "payments",
+    "name": "api"
+  },
+  "observed_at": "2026-06-29T22:30:00Z",
+  "details": {
+    "diff": {
+      "old": { "spec": { "replicas": 2 } },
+      "new": { "spec": { "replicas": 3 } }
+    }
+  }
+}
+```
+
+Порядок событий важен внутри одного ресурса или log stream. Поэтому key для `cluster.events` должен строиться по resource identity:
+
+```text
+<cluster>/<namespace>/<group>/<version>/<kind>/<name>
+```
+
+### 12.4. Подготовка к будущей reconcile-модели
+
+Текущий MVP -- это command executor:
+
+```text
+получил команду -> проверил policy -> выполнил -> отправил result
+```
+
+Reconcile-модель работает иначе:
+
+```text
+desired state -> compare with actual state -> apply correction
+```
+
+Чтобы перейти к reconcile-поведению, агенту нужны:
+
+- фактическое состояние ресурсов;
+- поток событий об изменениях;
+- cache/indexer;
+- workqueue;
+- handler/reconciler, который сравнивает desired и actual state.
+
+Informers/watchers дают первые три элемента уже в MVP.
+
+Пример развития:
+
+```text
+сейчас:
+  command: apply VirtualService
+  agent: один раз применил manifest
+
+позже:
+  command: set desired VirtualService
+  agent: хранит desired intent
+  informer: видит изменение actual VirtualService
+  reconciler: сравнивает desired vs actual
+  agent: возвращает ресурс к desired state
+```
+
+При этом Kafka-контракт может остаться прежним:
+
+```text
+headers: correlation_id, reply_topic
+body: schema_version, command_id, type, idempotency_key, timeout, issued_at, payload/http
+response: command_id, correlation_id, status, reason, details
+```
+
+Меняется только внутренняя реализация handler-а:
+
+```text
+сейчас:
+  command -> direct handler -> kube-apiserver
+
+потом:
+  command -> desired-state adapter -> workqueue -> reconciler -> kube-apiserver
+```
+
+То есть informers/watchers в MVP нужны для **cache + events**, а в будущем становятся фундаментом для **controller/reconcile** поведения.
+
+## 13. Почему будущий reconcile можно добавить без изменения Kafka-контракта
 
 Фраза "архитектура допускает добавление reconcile-контроллеров без изменения Kafka-контракта" означает, что Kafka envelope описывает внешний intent и routing metadata, но не фиксирует внутренний способ исполнения внутри агента.
 
@@ -618,7 +836,7 @@ Kafka-контракт при этом остаётся тем же:
 
 Это важно для эволюции: MVP остаётся простым command executor, но ресурсы, где нужно удерживать desired state, можно перевести на reconcile-поведение без миграции Java-клиента и без смены request/reply топиков.
 
-## 13. Надёжность и семантика доставки
+## 14. Надёжность и семантика доставки
 
 MVP сознательно выбирает простую модель:
 
@@ -636,7 +854,7 @@ MVP сознательно выбирает простую модель:
 - rejected/failed результат уходит в reply topic;
 - если потребуется строгая гарантия "принято -> обязательно будет результат", нужно отдельно вводить outbox/state storage или менять commit policy.
 
-## 14. Идемпотентность
+## 15. Идемпотентность
 
 В MVP агент остаётся stateless, поэтому главный владелец идемпотентности -- core/core-client. Агент не хранит долгоживущее состояние обработанных `idempotency_key`, не держит persistent outbox и не использует Redis/PostgreSQL/CRD для dedupe.
 
@@ -648,7 +866,7 @@ MVP сознательно выбирает простую модель:
 4. команды проектируются как "привести к состоянию", а не "сделать относительное изменение";
 5. Kubernetes handlers используют идемпотентные паттерны там, где это возможно.
 
-### 14.1. Ответственность core
+### 15.1. Ответственность core
 
 Core хранит состояние команды примерно в такой модели:
 
@@ -666,7 +884,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Это особенно важно из-за выбранной Kafka-семантики MVP: агент commit-ит offset при получении, поэтому Kafka не переисполнит команду автоматически после падения агента. Повтор инициируется снаружи -- core/client-слоем.
 
-### 14.2. Правила проектирования команд
+### 15.2. Правила проектирования команд
 
 Команды должны описывать конечное желаемое состояние.
 
@@ -696,7 +914,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Повтор такой команды меняет состояние повторно и не является идемпотентным.
 
-### 14.3. Kubernetes/Istio операции
+### 15.3. Kubernetes/Istio операции
 
 | Операция | Идемпотентный паттерн |
 | --- | --- |
@@ -710,7 +928,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Для generic HTTP-туннеля агент не всегда знает бизнес-смысл операции, поэтому основная защита находится в allow-list и в том, какие fabric8 операции core-client предоставляет наружу. Например, клиентский API не должен поощрять относительные изменения вроде "увеличить replicas на 1".
 
-### 14.4. `logs.collect`
+### 15.4. `logs.collect`
 
 `logs.collect` -- long-running typed command:
 
@@ -728,7 +946,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для MVP допустима простая модель: retry `logs.collect` повторно собирает zip и перезаписывает тот же S3 object key. Если позже потребуется более строгая гарантия, можно перейти на temp key + finalize/copy в final key или conditional write, если выбранный S3 provider это поддерживает.
 
-### 14.5. Что агент в MVP не гарантирует
+### 15.5. Что агент в MVP не гарантирует
 
 Агент в MVP не обеспечивает exactly-once и не делает persistent dedupe.
 
@@ -742,7 +960,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Если core отправит две одинаковые команды одновременно, агент может выполнить обе. Это должно предотвращаться core-side lock/dedupe по `idempotency_key`.
 
-### 14.6. Возможное усиление после MVP
+### 15.6. Возможное усиление после MVP
 
 Если появится требование "принято агентом -> результат гарантированно будет опубликован" или "агент сам подавляет дубли после рестарта", возможны варианты усиления:
 
@@ -753,7 +971,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для MVP выбран вариант: **core idempotency store + идемпотентный дизайн команд + deterministic S3 keys**.
 
-## 15. Response shaping
+## 16. Response shaping
 
 Агент не является полностью прозрачным proxy: он фильтрует запросы и формирует ответы так, чтобы не перегружать Kafka.
 
@@ -776,7 +994,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для `LIST` используется пагинация Kubernetes API. Для producer-а включается compression (`zstd`/`lz4`).
 
-## 16. Наблюдаемость
+## 17. Наблюдаемость
 
 Метрики:
 
@@ -806,7 +1024,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Секретные значения, включая S3 credentials из `logs.collect`, не пишутся в логи.
 
-## 17. Открытые вопросы
+## 18. Открытые вопросы
 
 1. Нужен ли криптографический signature/HMAC поверх Kafka ACL?
 2. Нужна ли строгая гарантия результата для каждой принятой команды? Если да, потребуется outbox/state storage или другая commit policy.
