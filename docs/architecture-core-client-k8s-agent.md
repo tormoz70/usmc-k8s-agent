@@ -596,12 +596,11 @@ Informers/watchers в агенте -- это не просто "наблюден
 - **watcher** -- низкоуровневый stream событий от kube-apiserver: `ADDED`, `MODIFIED`, `DELETED`;
 - **informer** -- обёртка над `LIST + WATCH`, которая сначала загружает начальное состояние, затем держит watch-поток, обновляет локальный cache/indexer и вызывает event handlers.
 
-В MVP informers/watchers используются для четырёх задач:
+В MVP informers/watchers используются для трёх задач:
 
 1. чтение актуального состояния перед выполнением команды;
 2. снижение нагрузки на kube-apiserver;
-3. отслеживание изменений управляемых ресурсов;
-4. подготовка к будущей reconcile-модели.
+3. отслеживание изменений управляемых ресурсов.
 
 ### 12.1. Чтение актуального состояния перед выполнением команды
 
@@ -746,97 +745,9 @@ kube-apiserver -> informer -> k8s-agent -> Kafka cluster.events -> core
 <cluster>/<namespace>/<group>/<version>/<kind>/<name>
 ```
 
-### 12.4. Подготовка к будущей reconcile-модели
+Informers/watchers в нашей архитектуре не меняют роль агента. Агент остаётся **командным процессором**: он исполняет полученную команду, публикует результат и отдельно отдаёт поток наблюдений в `cluster.events`.
 
-Текущий MVP -- это command executor:
-
-```text
-получил команду -> проверил policy -> выполнил -> отправил result
-```
-
-Reconcile-модель работает иначе:
-
-```text
-desired state -> compare with actual state -> apply correction
-```
-
-Чтобы перейти к reconcile-поведению, агенту нужны:
-
-- фактическое состояние ресурсов;
-- поток событий об изменениях;
-- cache/indexer;
-- workqueue;
-- handler/reconciler, который сравнивает desired и actual state.
-
-Informers/watchers дают первые три элемента уже в MVP.
-
-Пример развития:
-
-```text
-сейчас:
-  command: apply VirtualService
-  agent: один раз применил manifest
-
-позже:
-  command: set desired VirtualService
-  agent: хранит desired intent
-  informer: видит изменение actual VirtualService
-  reconciler: сравнивает desired vs actual
-  agent: возвращает ресурс к desired state
-```
-
-При этом Kafka-контракт может остаться прежним:
-
-```text
-headers: correlation_id, reply_topic
-body: schema_version, command_id, type, idempotency_key, timeout, issued_at, payload/http
-response: command_id, correlation_id, status, reason, details
-```
-
-Меняется только внутренняя реализация handler-а:
-
-```text
-сейчас:
-  command -> direct handler -> kube-apiserver
-
-потом:
-  command -> desired-state adapter -> workqueue -> reconciler -> kube-apiserver
-```
-
-То есть informers/watchers в MVP нужны для **cache + events**, а в будущем становятся фундаментом для **controller/reconcile** поведения.
-
-## 13. Почему будущий reconcile можно добавить без изменения Kafka-контракта
-
-Фраза "архитектура допускает добавление reconcile-контроллеров без изменения Kafka-контракта" означает, что Kafka envelope описывает внешний intent и routing metadata, но не фиксирует внутренний способ исполнения внутри агента.
-
-Сейчас execution path для `type=k8s.api` выглядит так:
-
-```text
-Kafka request -> validator -> policy -> router -> direct proxy handler -> kube-apiserver -> reply
-```
-
-Позже для части команд можно заменить direct handler на adapter к reconcile-контуру:
-
-```text
-Kafka request -> validator -> policy -> router -> desired-state adapter -> workqueue/reconciler -> kube-apiserver -> reply/events
-```
-
-Kafka-контракт при этом остаётся тем же:
-
-- headers: `correlation_id`, `reply_topic`;
-- body: `schema_version`, `command_id`, `type`, `idempotency_key`, `timeout`, `issued_at`, payload/http;
-- result: `command_id`, `correlation_id`, `status`, `reason`, timestamps, error/details.
-
-Меняется только внутренняя реализация handler-а:
-
-- direct handler сразу делает HTTP/proxy/apply;
-- reconcile handler может материализовать intent во внутреннюю workqueue, in-memory desired state или, если позже будет принято отдельное решение, в CRD;
-- watcher/informer уже есть, поэтому reconciler может переиспользовать cache, event handlers, RESTMapper и Kubernetes clients;
-- для долгих операций result stream может использовать уже существующие статусы `executing`/`completed`/`failed`, не добавляя новый Kafka protocol.
-
-Это важно для эволюции: MVP остаётся простым command executor, но ресурсы, где нужно удерживать desired state, можно перевести на reconcile-поведение без миграции Java-клиента и без смены request/reply топиков.
-
-## 14. Надёжность и семантика доставки
+## 13. Надёжность и семантика доставки
 
 MVP сознательно выбирает простую модель:
 
@@ -854,7 +765,7 @@ MVP сознательно выбирает простую модель:
 - rejected/failed результат уходит в reply topic;
 - если потребуется строгая гарантия "принято -> обязательно будет результат", нужно отдельно вводить outbox/state storage или менять commit policy.
 
-## 15. Идемпотентность
+## 14. Идемпотентность
 
 В MVP агент остаётся stateless, поэтому главный владелец идемпотентности -- core/core-client. Агент не хранит долгоживущее состояние обработанных `idempotency_key`, не держит persistent outbox и не использует Redis/PostgreSQL/CRD для dedupe.
 
@@ -866,7 +777,7 @@ MVP сознательно выбирает простую модель:
 4. команды проектируются как "привести к состоянию", а не "сделать относительное изменение";
 5. Kubernetes handlers используют идемпотентные паттерны там, где это возможно.
 
-### 15.1. Ответственность core
+### 14.1. Ответственность core
 
 Core хранит состояние команды примерно в такой модели:
 
@@ -884,7 +795,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Это особенно важно из-за выбранной Kafka-семантики MVP: агент commit-ит offset при получении, поэтому Kafka не переисполнит команду автоматически после падения агента. Повтор инициируется снаружи -- core/client-слоем.
 
-### 15.2. Правила проектирования команд
+### 14.2. Правила проектирования команд
 
 Команды должны описывать конечное желаемое состояние.
 
@@ -914,7 +825,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Повтор такой команды меняет состояние повторно и не является идемпотентным.
 
-### 15.3. Kubernetes/Istio операции
+### 14.3. Kubernetes/Istio операции
 
 | Операция | Идемпотентный паттерн |
 | --- | --- |
@@ -928,7 +839,7 @@ idempotency_key -> command_id, status, result, created_at, updated_at
 
 Для generic HTTP-туннеля агент не всегда знает бизнес-смысл операции, поэтому основная защита находится в allow-list и в том, какие fabric8 операции core-client предоставляет наружу. Например, клиентский API не должен поощрять относительные изменения вроде "увеличить replicas на 1".
 
-### 15.4. `logs.collect`
+### 14.4. `logs.collect`
 
 `logs.collect` -- long-running typed command:
 
@@ -946,7 +857,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для MVP допустима простая модель: retry `logs.collect` повторно собирает zip и перезаписывает тот же S3 object key. Если позже потребуется более строгая гарантия, можно перейти на temp key + finalize/copy в final key или conditional write, если выбранный S3 provider это поддерживает.
 
-### 15.5. Что агент в MVP не гарантирует
+### 14.5. Что агент в MVP не гарантирует
 
 Агент в MVP не обеспечивает exactly-once и не делает persistent dedupe.
 
@@ -960,7 +871,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Если core отправит две одинаковые команды одновременно, агент может выполнить обе. Это должно предотвращаться core-side lock/dedupe по `idempotency_key`.
 
-### 15.6. Возможное усиление после MVP
+### 14.6. Возможное усиление после MVP
 
 Если появится требование "принято агентом -> результат гарантированно будет опубликован" или "агент сам подавляет дубли после рестарта", возможны варианты усиления:
 
@@ -971,7 +882,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для MVP выбран вариант: **core idempotency store + идемпотентный дизайн команд + deterministic S3 keys**.
 
-## 16. Response shaping
+## 15. Response shaping
 
 Агент не является полностью прозрачным proxy: он фильтрует запросы и формирует ответы так, чтобы не перегружать Kafka.
 
@@ -994,7 +905,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Для `LIST` используется пагинация Kubernetes API. Для producer-а включается compression (`zstd`/`lz4`).
 
-## 17. Наблюдаемость
+## 16. Наблюдаемость
 
 Метрики:
 
@@ -1024,7 +935,7 @@ read logs -> temp files -> zip -> S3 upload -> response with bucket/key
 
 Секретные значения, включая S3 credentials из `logs.collect`, не пишутся в логи.
 
-## 18. Открытые вопросы
+## 17. Открытые вопросы
 
 1. Нужен ли криптографический signature/HMAC поверх Kafka ACL?
 2. Нужна ли строгая гарантия результата для каждой принятой команды? Если да, потребуется outbox/state storage или другая commit policy.

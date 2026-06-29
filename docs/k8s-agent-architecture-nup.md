@@ -496,7 +496,6 @@ Namespace-scoped RoleBinding предпочтительнее ClusterRoleBinding
 | Альтернатива | Причина отказа |
 |---|---|
 | kubectl-as-a-service | Слишком широкие права; выбран `generic_limited` |
-| controller-runtime reconcile | Не нужно удержание desired state |
 | Локальное хранение idempotency (CRD/Redis/PostgreSQL) | Архитектура agent + core: dedupe на core |
 | CRD WatchSubscription в etcd | Core хранит подписки и переотправляет при рестарте |
 | agent | client-go ecosystem, single static binary |
