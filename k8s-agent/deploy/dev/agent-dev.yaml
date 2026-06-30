@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-agent
+  namespace: k8s-agent
+  labels:
+    app: k8s-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-agent
+    spec:
+      serviceAccountName: k8s-agent
+      containers:
+        - name: agent
+          image: k8s-agent:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka.kafka.svc.cluster.local:9092"
+            - name: KAFKA_TOPIC_COMMANDS_IN
+              value: "commands.in"
+            - name: KAFKA_TOPIC_COMMANDS_OUT
+              value: "commands.results"
+            - name: KAFKA_TOPIC_CLUSTER_EVENTS
+              value: "cluster.events"
+            - name: KAFKA_TOPIC_DLQ
+              value: "commands.dlq"
+            - name: POLICY_FILE
+              value: "/etc/k8s-agent/policy.yaml"
+            - name: LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: LEADER_LEASE_NAME
+              value: "k8s-agent-leader"
+            - name: LEADER_LEASE_NAMESPACE
+              value: "k8s-agent"
+            - name: TEMP_DIR
+              value: "/tmp/k8s-agent"
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/k8s-agent
+              readOnly: true
+            - name: temp
+              mountPath: /tmp/k8s-agent
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: policy
+          configMap:
+            name: k8s-agent-policy
+        - name: temp
+          emptyDir: {}
