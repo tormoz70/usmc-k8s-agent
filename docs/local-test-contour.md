@@ -84,6 +84,7 @@ make --version      # если «не распознано» — использ�
 | `kubectl apply -k` → `file ... is not in or below ...` | устаревший overlay | Обновите репозиторий; policy генерируется в `deploy/base`, не через `../../` в overlay |
 | `kind: command not found` | kind не установлен | https://kind.sigs.k8s.io/docs/user/quick-start/#installation |
 | Docker daemon not running | Docker не запущен | Запустите Docker Desktop |
+| `kind create` → kubelet healthz timeout | мало RAM/CPU у Docker или нестабильный node image | См. [§12 kind не создаётся](#kind-не-создаётся-kubelet-healthz--no-nodes-found) |
 
 ### 1.4 Проверка манифестов (до деплоя)
 
@@ -209,10 +210,10 @@ kubectl logs -n k8s-agent -l app=k8s-agent --tail=20
 
 ```bash
 kubectl get pods -n k8s-agent -l k8s-agent/leader=true
-kubectl get configmap k8s-agent-policy -n k8s-agent -o yaml | grep cache.put
+kubectl get configmap k8s-agent-policy -n k8s-agent -o yaml | grep cache.put   # Linux/macOS only
 ```
 
-PowerShell:
+PowerShell (Windows — **`grep` не работает**, используйте `Select-String`):
 
 ```powershell
 kubectl get pods -n k8s-agent
@@ -457,6 +458,75 @@ docker compose down -v
 
 ## 12. Troubleshooting
 
+### kind не создаётся (kubelet healthz / no nodes found)
+
+**Симптомы:**
+
+```text
+[kubelet-check] The kubelet is not healthy after 4m0s
+ERROR: no nodes found for cluster "k8s-agent"
+```
+
+**Причина:** kind не смог поднять control-plane (часто на **Docker Desktop / Windows**). Скрипт bootstrap **не должен** продолжать сборку, если кластер не создан.
+
+**Шаги:**
+
+1. Удалите сломанный кластер:
+
+```powershell
+kind delete cluster --name k8s-agent
+```
+
+2. Docker Desktop → **Settings → Resources**:
+   - Memory: **≥ 4 GB** (лучше 6–8 GB)
+   - CPUs: **≥ 2**
+   - Перезапустите Docker Desktop
+
+3. Повторите с зафиксированным node image (`hack/kind-config.yaml` → `kindest/node:v1.31.2`):
+
+```powershell
+make kind-up
+```
+
+4. Проверка:
+
+```powershell
+kind get clusters
+kubectl cluster-info --context kind-k8s-agent
+kubectl get nodes
+```
+
+**Если снова падает на kubelet** — посмотрите логи:
+
+```powershell
+docker logs k8s-agent-control-plane 2>&1 | Select-Object -Last 50
+```
+
+Обновите kind до последней версии: https://kind.sigs.k8s.io/docs/user/quick-start/#installation
+
+### Leader pod не найден (`No resources found`)
+
+```powershell
+kubectl get pods -n k8s-agent -o wide
+kubectl get lease -n k8s-agent
+kubectl logs -n k8s-agent -l app=k8s-agent --tail=30
+```
+
+| Симптом | Что проверить |
+| --- | --- |
+| Pod'ы не `Running` | `kubectl describe pod -n k8s-agent -l app=k8s-agent` |
+| Нет Lease / holder | Kafka недоступен → `docker compose ps`, логи агента |
+| Pod Running, но нет label `k8s-agent/leader=true` | После обновления RBAC: `kubectl apply -k deploy/overlays/local` и `kubectl rollout restart deployment/k8s-agent -n k8s-agent` |
+| Label есть, selector не находит | Убедитесь в точном синтаксисе: `-l k8s-agent/leader=true` |
+
+Проверка label на всех pod'ах:
+
+```powershell
+kubectl get pods -n k8s-agent --show-labels
+```
+
+Leader может работать через Lease **без** label, пока patch RBAC не применён; HTTP Service `k8s-agent-http` (cache API) **требует** label на leader.
+
 ### Pod'ы агента не Ready
 
 ```bash
@@ -498,7 +568,7 @@ kubectl rollout restart deployment/k8s-agent -n k8s-agent
 | `make` не найден | Команды из Makefile вручную или `choco install make` |
 | `go` не найден при `make mock-core` | Установить Go или собрать mock-core через Docker ([§5](#5-собрать-mock-core)) |
 | `bootstrap.sh` / bash не найден | `powershell -File hack\bootstrap.ps1` или обновлённый `make kind-up` |
-| kustomize security error на `../../` | `git pull`; policy в `deploy/base/kustomization.yaml` |
+| `grep` не распознано | В PowerShell: `Select-String "cache.put"` вместо `grep cache.put` |
 | `host.docker.internal` | Поддерживается Docker Desktop на Windows |
 
 - `make kind-up` → `hack/bootstrap.ps1` (bash не нужен)
