@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-agent
+  namespace: k8s-agent
+  labels:
+    app: k8s-agent
+spec:
+  selector:
+    app: k8s-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-agent-http
+  namespace: k8s-agent
+  labels:
+    app: k8s-agent
+spec:
+  selector:
+    app: k8s-agent
+    k8s-agent/leader: "true"
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

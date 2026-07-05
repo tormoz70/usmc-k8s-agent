@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-agent
+  namespace: k8s-agent
+  labels:
+    app: k8s-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: k8s-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-agent
+    spec:
+      serviceAccountName: k8s-agent
+      containers:
+        - name: agent
+          image: k8s-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: CLUSTER_ID
+              value: local
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: AGENT_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_BROKERS
+              value: host.docker.internal:9092
+            - name: POLICY_FILE
+              value: /etc/k8s-agent/policy/policy.yaml
+            - name: POLICY_NAMESPACES_FILE
+              value: /etc/k8s-agent/policy/namespaces.yaml
+            - name: HTTP_PORT
+              value: "8080"
+            - name: LOGS_TEMP_DIR
+              value: /var/tmp/logs-collect
+            - name: S3_ENDPOINT
+              value: http://host.docker.internal:9000
+            - name: S3_FORCE_PATH_STYLE
+              value: "true"
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/k8s-agent/policy
+            - name: logs-temp
+              mountPath: /var/tmp/logs-collect
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: policy
+          configMap:
+            name: k8s-agent-policy
+        - name: logs-temp
+          emptyDir:
+            sizeLimit: 2Gi

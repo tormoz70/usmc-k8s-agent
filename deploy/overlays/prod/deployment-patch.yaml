@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-agent
+  namespace: k8s-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: KAFKA_TLS_ENABLED
+              value: "true"
+            - name: KAFKA_TLS_CA_FILE
+              value: /etc/k8s-agent/kafka-tls/ca.crt
+            - name: KAFKA_TLS_CERT_FILE
+              value: /etc/k8s-agent/kafka-tls/tls.crt
+            - name: KAFKA_TLS_KEY_FILE
+              value: /etc/k8s-agent/kafka-tls/tls.key
+            - name: HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-agent-http-token
+                  key: token
+            - name: K8S_API_QPS
+              value: "30"
+            - name: K8S_API_BURST
+              value: "60"
+          volumeMounts:
+            - name: kafka-tls
+              mountPath: /etc/k8s-agent/kafka-tls
+              readOnly: true
+      volumes:
+        - name: kafka-tls
+          secret:
+            secretName: k8s-agent-kafka-tls

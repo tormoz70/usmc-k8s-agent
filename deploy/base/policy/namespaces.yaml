@@ -1,0 +1,4 @@
+# Large clusters: extend this list (up to ~350 namespaces) or mount a generated file.
+namespaces:
+  - default
+  - k8s-agent
