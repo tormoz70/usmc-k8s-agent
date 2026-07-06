@@ -251,22 +251,51 @@ Service `k8s-agent-http` маршрутизирует трафик **тольк�
 
 ## 4. Тестовые workload'ы в кластере
 
-Для `logs.collect` и `health.report` создайте pod'ы в `default`:
+Демо-данные описаны в [`deploy/test-data/`](../deploy/test-data/) и применяются автоматически при `make dev-up` (или вручную: `make seed-test-data`).
 
-```bash
-kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
-kubectl run test-busybox --image=busybox:1.36 --labels=app=test \
-  --command -- sh -c 'while true; do echo hello; sleep 5; done' -n default
+### 4.1 Что создаётся
+
+| Namespace | Deployment'ы | Pod'ы с логами в stdout |
+| --- | --- | --- |
+| **default** | `web` (nginx×2), `api` (busybox, пишет лог) | `logger-a`, `logger-b` (`app=test`) |
+| **payments** | `billing-api` (busybox×2, пишет лог) | `logger` (`app=test`) |
+| **catalog** | `products` (nginx×2), `indexer` (busybox, пишет лог) | `logger` (`app=test`) |
+| **demo** | `worker` (busybox, пишет лог) | `logger` (`app=test`) |
+
+Namespace'ы `payments`, `catalog`, `demo` добавлены в allow-list policy локального overlay ([`deploy/test-data/policy/namespaces.yaml`](../deploy/test-data/policy/namespaces.yaml)).
+
+Агент работает от ServiceAccount **`uamcsa`** (namespace `k8s-agent`). В каждом тестовом namespace создан **RoleBinding** `uamcsa-agent` → ClusterRole `k8s-agent` ([`deploy/test-data/uamcsa-rolebindings.yaml`](../deploy/test-data/uamcsa-rolebindings.yaml)).
+
+### 4.2 Применить / обновить данные
+
+```powershell
+make seed-test-data
+# или:
+kubectl apply -k deploy/test-data
 ```
 
-PowerShell (одной строкой, без `\`):
+Идempotent: повторный `apply` обновит существующие объекты.
+
+### 4.3 Просмотр логов с хоста
+
+```powershell
+kubectl get pods -A -l app.kubernetes.io/part-of=test-data
+kubectl logs -n default logger-a -f
+kubectl logs -n payments deploy/billing-api -f
+kubectl logs -n catalog deploy/indexer -f
+kubectl logs -n demo deploy/worker -f
+```
+
+Pod'ы с label `app=test` используются шаблоном `logs-collect` в mock-core UI.
+
+### 4.4 Ручное создание (legacy)
+
+Если нужен только минимальный набор в `default`:
 
 ```powershell
 kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
 kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n default
 ```
-
-Allow-list policy разрешает namespace `default` и `k8s-agent`.
 
 ---
 
@@ -332,19 +361,22 @@ Responses: сообщение с тем же correlation_id
 
 | # | Шаблон | Что проверяет | Ожидание в Responses |
 | --- | --- | --- | --- |
-| 1 | `k8s-api-list-namespaces` | Kafka + apiserver, минимальный запрос | `"status": "completed"`, список namespace'ов |
+| 1 | `k8s-api-list-services` | Kafka + apiserver, list в `default` | `"status": "completed"`, JSON `items` |
 | 2 | `k8s-api-list-pods` | list pod'ов с `app=test` | `test-nginx`, `test-busybox` в теле |
 | 3 | `k8s-api-list-deployments` | list Deployment'ов | JSON `items` из `default` |
 | 4 | `cache-put` → `cache-delete` | cache write + delete | оба `"status": "completed"` |
+| 5 | `k8s-api-list-rolebindings-all` | RBAC: все RoleBinding в кластере | `uamcsa-agent` в `default`, `payments`, … |
 
 Шаблоны 1–3 — тип `k8s.api`, достаточно **Send command** без дополнительных настроек.
+
+> **Почему не `/api/v1/namespaces`:** у ServiceAccount агента нет cluster-scoped права `list namespaces` (см. `deploy/base/clusterrole.yaml`). Запросы только к ресурсам в allow-list namespace'ах (`default`, `k8s-agent`).
 
 ### 5.4 Базовый smoke-test: k8s.api
 
 Проверяет, что агент читает Kafka и ходит в kube-apiserver.
 
 1. Вкладка **Commands**
-2. **Template** → `k8s-api-list-namespaces (k8s.api)` — самый быстрый первый запрос
+2. **Template** → `k8s-api-list-services (k8s.api)` — самый быстрый первый запрос (list Service в `default`)
 3. **Reply topic** — оставьте `core-client.dev.responses`
 4. Нажмите **Send command**
 5. Вкладка **Responses** — через несколько секунд появится сообщение с вашим `correlation_id`
@@ -412,12 +444,13 @@ curl http://localhost:8080/v1/cache/feature/payments/new-checkout
 
 | Что проверяем | Шаблон в UI | Topic в Responses | Дополнительно |
 | --- | --- | --- | --- |
-| Быстрый smoke | `k8s-api-list-namespaces` | reply topic (авто) | — |
+| Быстрый smoke | `k8s-api-list-services` | reply topic (авто) | — |
 | Test pod'ы | `k8s-api-list-pods` | reply topic (авто) | нужен `make dev-up` |
 | Kafka + apiserver | `k8s-api-list-deployments` | reply topic (авто) | — |
 | Сбор логов → S3 | `logs-collect` | reply topic (авто) | **S3 Check** |
 | Watch pod'ов | `watch-subscribe-pods` | `cluster.events` | создать/удалить pod |
 | Cache write / delete | `cache-put`, `cache-delete` | reply topic (авто) | port-forward :8080 |
+| RBAC RoleBindings | `k8s-api-list-rolebindings-all` | reply topic (авто) | ищите `uamcsa-agent` |
 | Health snapshots | `health-report-start` | `cluster.health` | подождать ~60 с |
 
 ### 5.10 Запуск UI без Docker (опционально)

@@ -8,5 +8,5 @@ roleRef:
   name: k8s-agent
 subjects:
   - kind: ServiceAccount
-    name: k8s-agent
+    name: uamcsa
     namespace: k8s-agent

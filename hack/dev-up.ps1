@@ -1,10 +1,9 @@
-# Full local dev environment: compose infra + kind cluster + agent + test pods.
+# Full local dev environment: compose infra + kind cluster + agent + test data.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-$ClusterName = "k8s-agent"
 $InfraTimeoutSec = 60
 
 function Require-Command([string]$Name) {
@@ -41,23 +40,6 @@ function Wait-HttpOk([string]$Url, [int]$TimeoutSec) {
     Write-Error "Timeout waiting for $Url"
 }
 
-function Ensure-TestPod([string]$Name, [string[]]$KubectlArgs) {
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    & kubectl get pod $Name -n default -o name 2>$null | Out-Null
-    $exists = ($LASTEXITCODE -eq 0)
-    $ErrorActionPreference = $prev
-    if ($exists) {
-        Write-Host "Pod '$Name' already exists in default, skipping."
-        return
-    }
-    Write-Host "Creating pod '$Name'..."
-    & kubectl @KubectlArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to create pod '$Name'"
-    }
-}
-
 Write-Host "=== dev-up: full local test environment ===" -ForegroundColor Cyan
 
 Require-Command docker
@@ -82,14 +64,9 @@ Write-Host "Waiting for k8s-agent rollout..."
 & kubectl rollout status deployment/k8s-agent -n k8s-agent --timeout=120s
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "`n[4/4] Creating test pods in default..."
-Ensure-TestPod "test-nginx" @(
-    "run", "test-nginx", "--image=nginx:1.27", "--labels=app=test", "-n", "default"
-)
-Ensure-TestPod "test-busybox" @(
-    "run", "test-busybox", "--image=busybox:1.36", "--labels=app=test",
-    "--command", "--", "sh", "-c", "while true; do echo hello; sleep 5; done", "-n", "default"
-)
+Write-Host "`n[4/4] Seeding test cluster data..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File hack/seed-test-data.ps1
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
 Write-Host "=== Environment ready ===" -ForegroundColor Green
@@ -97,7 +74,7 @@ Write-Host "  mock-core UI:  http://localhost:8090"
 Write-Host "  Kafka UI:      http://localhost:8088"
 Write-Host "  MinIO Console: http://localhost:9001"
 Write-Host ""
-Write-Host "  kubectl get pods -n k8s-agent"
-Write-Host "  kubectl get pods -n default -l app=test"
+Write-Host "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
+Write-Host "  kubectl logs -n default logger-a -f"
 Write-Host ""
-Write-Host "Smoke test: open mock-core UI -> k8s-api-list-deployments -> Send command"
+Write-Host "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"

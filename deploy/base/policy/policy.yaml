@@ -34,6 +34,8 @@ allowed_gvk:
   - { group: networking.istio.io, version: v1, kind: DestinationRule }
   - { group: networking.istio.io, version: v1, kind: Gateway }
   - { group: networking.istio.io, version: v1, kind: AuthorizationPolicy }
+  - { group: rbac.authorization.k8s.io, version: v1, kind: Role }
+  - { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding }
 
 allowed_namespaces:
   - default

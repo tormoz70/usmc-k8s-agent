@@ -15,7 +15,7 @@ spec:
       labels:
         app: k8s-agent
     spec:
-      serviceAccountName: k8s-agent
+      serviceAccountName: uamcsa
       containers:
         - name: agent
           image: k8s-agent:dev

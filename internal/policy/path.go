@@ -148,6 +148,10 @@ func resourceToKind(resource string) string {
 		return "Gateway"
 	case "authorizationpolicies", "authorizationpolicy":
 		return "AuthorizationPolicy"
+	case "rolebindings", "rolebinding":
+		return "RoleBinding"
+	case "roles", "role":
+		return "Role"
 	default:
 		if resource == "" {
 			return ""

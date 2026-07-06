@@ -4,6 +4,12 @@ kind: Kustomization
 resources:
   - ../../base
 
+configMapGenerator:
+  - name: k8s-agent-policy
+    behavior: merge
+    files:
+      - namespaces.yaml=policy/namespaces.yaml
+
 patches:
   - patch: |-
       - op: replace

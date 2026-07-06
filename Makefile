@@ -2,7 +2,7 @@ MODULE ?= github.com/usmc/usmc-k8s-agent
 BIN  ?= bin/agent
 IMAGE ?= k8s-agent:dev
 
-.PHONY: all build test lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full clean
+.PHONY: all build test lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full seed-test-data clean
 
 all: build
 
@@ -38,6 +38,14 @@ endif
 
 dev-down-full: dev-down
 	kind delete cluster --name k8s-agent
+
+ifeq ($(OS),Windows_NT)
+seed-test-data:
+	powershell -NoProfile -ExecutionPolicy Bypass -File hack/seed-test-data.ps1
+else
+seed-test-data:
+	hack/seed-test-data.sh
+endif
 
 ifeq ($(OS),Windows_NT)
 kind-up:

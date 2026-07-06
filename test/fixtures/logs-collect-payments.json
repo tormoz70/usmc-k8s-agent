@@ -1,0 +1,21 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-test-logs-collect-payments",
+  "type": "logs.collect",
+  "issuer": "mock-core",
+  "idempotency_key": "logs/payments/test/2026-07-06",
+  "timeout": "10m",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "namespace": "payments",
+    "label_selector": "app=test",
+    "include_current": true,
+    "include_previous": false,
+    "s3": {
+      "bucket": "logs-bundles",
+      "key": "logs/payments/bundle.zip",
+      "access_key_id": "minioadmin",
+      "secret_access_key": "minioadmin"
+    }
+  }
+}

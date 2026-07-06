@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CLUSTER_NAME="k8s-agent"
 INFRA_TIMEOUT_SEC=60
 
 require_command() {
@@ -38,17 +37,6 @@ wait_http_ok() {
   return 1
 }
 
-ensure_test_pod() {
-  local name=$1
-  shift
-  if kubectl get pod "$name" -n default -o name >/dev/null 2>&1; then
-    echo "Pod '$name' already exists in default, skipping."
-    return 0
-  fi
-  echo "Creating pod '$name'..."
-  kubectl "$@"
-}
-
 echo "=== dev-up: full local test environment ==="
 
 require_command docker
@@ -74,10 +62,8 @@ echo "Waiting for k8s-agent rollout..."
 kubectl rollout status deployment/k8s-agent -n k8s-agent --timeout=120s
 
 echo
-echo "[4/4] Creating test pods in default..."
-ensure_test_pod test-nginx run test-nginx --image=nginx:1.27 --labels=app=test -n default
-ensure_test_pod test-busybox run test-busybox --image=busybox:1.36 --labels=app=test \
-  --command -- sh -c 'while true; do echo hello; sleep 5; done' -n default
+echo "[4/4] Seeding test cluster data..."
+hack/seed-test-data.sh
 
 echo
 echo "=== Environment ready ==="
@@ -85,7 +71,7 @@ echo "  mock-core UI:  http://localhost:8090"
 echo "  Kafka UI:      http://localhost:8088"
 echo "  MinIO Console: http://localhost:9001"
 echo
-echo "  kubectl get pods -n k8s-agent"
-echo "  kubectl get pods -n default -l app=test"
+echo "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
+echo "  kubectl logs -n default logger-a -f"
 echo
-echo "Smoke test: open mock-core UI -> k8s-api-list-deployments -> Send command"
+echo "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"
