@@ -35,3 +35,33 @@
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: redpanda:9092
     depends_on:
       - redpanda
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do echo waiting for minio...; sleep 2; done &&
+      mc mb --ignore-existing local/logs-bundles &&
+      echo bucket logs-bundles ready"
+
+  mock-core-ui:
+    build:
+      context: .
+      dockerfile: hack/mock-core-ui/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      FIXTURES_DIR: /fixtures
+      MINIO_CONSOLE_URL: http://localhost:9001
+    volumes:
+      - ./test/fixtures:/fixtures:ro
+    depends_on:
+      - redpanda
+      - minio

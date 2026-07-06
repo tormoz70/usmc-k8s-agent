@@ -28,13 +28,18 @@ Go module: `github.com/usmc/usmc-k8s-agent` (change via `go mod edit -module=...
 Подробная инструкция по локальному тестовому контуру (включая проверку окружения на Windows): **[docs/local-test-contour.md](docs/local-test-contour.md)**.
 
 ```bash
-# Kafka + MinIO
+# Full local test environment (one command)
+make dev-up
+# Smoke: http://localhost:8090 → k8s-api-list-deployments → Send command
+
+# Or step by step:
+# Kafka + MinIO + mock-core UI
 docker compose up -d
 
 # Build & test
 make tidy test build
 
-# In cluster (kind)
+# Agent in kind only
 make kind-up
 ```
 

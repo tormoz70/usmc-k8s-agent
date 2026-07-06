@@ -3,32 +3,35 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	kafkago "github.com/segmentio/kafka-go"
+	"github.com/usmc/usmc-k8s-agent/hack/mockcorelib"
 )
 
 func main() {
 	brokers := flag.String("brokers", env("KAFKA_BROKERS", "localhost:9092"), "Kafka brokers")
-	requestTopic := flag.String("request-topic", "k8s.commands.request", "request topic")
-	replyTopic := flag.String("reply-topic", "core-client.dev.responses", "reply topic")
+	requestTopic := flag.String("request-topic", mockcorelib.DefaultRequestTopic, "request topic")
+	replyTopic := flag.String("reply-topic", mockcorelib.DefaultReplyTopic, "reply topic")
 	eventTopic := flag.String("topic", "", "topic to listen on (with -listen)")
 	bodyFile := flag.String("file", "", "JSON command body file")
 	listen := flag.Bool("listen", false, "listen on a topic continuously")
 	flag.Parse()
 
-	brokerList := splitBrokers(*brokers)
+	brokerList := mockcorelib.SplitBrokers(*brokers)
 	if *listen {
 		topic := *eventTopic
 		if topic == "" {
 			topic = *replyTopic
 		}
-		listenTopic(brokerList, topic)
+		fmt.Printf("listening on %s ...\n", topic)
+		err := mockcorelib.ListenTopic(brokerList, topic, func(m mockcorelib.Message) {
+			fmt.Printf("[%s] partition=%d offset=%d key=%q correlation_id=%q body=%s\n",
+				m.Topic, m.Partition, m.Offset, m.Key, m.CorrelationID, string(m.Body))
+		})
+		fatal(err)
 		return
 	}
 	if *bodyFile == "" {
@@ -41,110 +44,28 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	sendCommand(brokerList, *requestTopic, *replyTopic, data)
-}
 
-func sendCommand(brokers []string, requestTopic, replyTopic string, body []byte) {
-	corrID := fmt.Sprintf("corr-%d", time.Now().UnixNano())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	go listenOnce(brokers, replyTopic, corrID)
-
-	w := &kafkago.Writer{
-		Addr:     kafkago.TCP(brokers...),
-		Topic:    requestTopic,
-		Balancer: &kafkago.LeastBytes{},
-	}
-	defer w.Close()
-
-	err := w.WriteMessages(ctx, kafkago.Message{
-		Value: body,
-		Headers: []kafkago.Header{
-			{Key: "correlation_id", Value: []byte(corrID)},
-			{Key: "reply_topic", Value: []byte(replyTopic)},
-		},
-	})
+	result, err := mockcorelib.SendCommand(ctx, brokerList, *requestTopic, *replyTopic, data)
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Printf("sent command correlation_id=%s reply_topic=%s\n", corrID, replyTopic)
-	select {}
-}
+	fmt.Printf("sent command correlation_id=%s reply_topic=%s\n", result.CorrelationID, result.ReplyTopic)
 
-func listenTopic(brokers []string, topic string) {
-	r := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		Topic:   topic,
-		GroupID: fmt.Sprintf("mock-core-%d", time.Now().UnixNano()),
-	})
-	defer r.Close()
-	fmt.Printf("listening on %s ...\n", topic)
-	for {
-		msg, err := r.ReadMessage(context.Background())
+	go func() {
+		err := mockcorelib.ListenOnce(brokerList, result.ReplyTopic, result.CorrelationID, 2*time.Minute, func(m mockcorelib.Message) {
+			fmt.Printf("[%s] partition=%d offset=%d key=%q body=%s\n",
+				m.Topic, m.Partition, m.Offset, m.Key, string(m.Body))
+		})
 		if err != nil {
-			fatal(err)
-		}
-		printMessage(topic, msg)
-	}
-}
-
-func listenOnce(brokers []string, replyTopic, corrID string) {
-	r := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		Topic:   replyTopic,
-		GroupID: fmt.Sprintf("mock-core-%d", time.Now().UnixNano()),
-	})
-	defer r.Close()
-	deadline := time.After(2 * time.Minute)
-	for {
-		select {
-		case <-deadline:
-			fmt.Println("timeout waiting for reply")
+			fmt.Println(err)
 			os.Exit(1)
-		default:
 		}
-		msg, err := r.ReadMessage(context.Background())
-		if err != nil {
-			return
-		}
-		if headerValue(msg.Headers, "correlation_id") != corrID {
-			continue
-		}
-		printMessage(replyTopic, msg)
 		os.Exit(0)
-	}
-}
-
-func printMessage(topic string, msg kafkago.Message) {
-	var pretty json.RawMessage
-	if json.Valid(msg.Value) {
-		pretty = msg.Value
-	} else {
-		pretty = json.RawMessage(fmt.Sprintf("%q", string(msg.Value)))
-	}
-	fmt.Printf("[%s] partition=%d offset=%d key=%q body=%s\n", topic, msg.Partition, msg.Offset, string(msg.Key), string(pretty))
-}
-
-func headerValue(headers []kafkago.Header, key string) string {
-	for _, h := range headers {
-		if h.Key == key {
-			return string(h.Value)
-		}
-	}
-	return ""
-}
-
-func splitBrokers(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	}()
+	select {}
 }
 
 func env(k, d string) string {

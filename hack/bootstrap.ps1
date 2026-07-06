@@ -37,11 +37,18 @@ Require-Command kind
 Require-Command docker
 Require-Command kubectl
 
-if (Test-KindCluster $ClusterName) {
-    Write-Host "Cluster '$ClusterName' already exists, skipping create."
-} else {
-    Write-Host "Creating kind cluster '$ClusterName'..."
-    & kind create cluster --name $ClusterName --config hack/kind-config.yaml
+function Test-KindClusterReachable([string]$Name) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & kubectl cluster-info --context "kind-$Name" 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prev
+    return $ok
+}
+
+function New-KindCluster([string]$Name) {
+    Write-Host "Creating kind cluster '$Name'..."
+    & kind create cluster --name $Name --config hack/kind-config.yaml
     if ($LASTEXITCODE -ne 0) {
         Write-Error @"
 kind create failed (exit $LASTEXITCODE).
@@ -49,7 +56,7 @@ kind create failed (exit $LASTEXITCODE).
 Common fixes on Windows / Docker Desktop:
   1. Docker Desktop -> Settings -> Resources: RAM >= 4 GB, CPUs >= 2
   2. Restart Docker Desktop
-  3. Delete broken cluster: kind delete cluster --name $ClusterName
+  3. Delete broken cluster: kind delete cluster --name $Name
   4. Retry: make kind-up
 
 If kubelet healthz timeout: see docs/local-test-contour.md (kind troubleshooting)
@@ -57,9 +64,22 @@ If kubelet healthz timeout: see docs/local-test-contour.md (kind troubleshooting
     }
 }
 
+if (Test-KindCluster $ClusterName) {
+    Write-Host "Cluster '$ClusterName' already exists, verifying..."
+    if (-not (Test-KindClusterReachable $ClusterName)) {
+        Write-Host "Cluster is unreachable (control-plane likely stopped). Recreating..."
+        & kind delete cluster --name $ClusterName
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        New-KindCluster $ClusterName
+    } else {
+        Write-Host "Cluster is reachable, skipping create."
+    }
+} else {
+    New-KindCluster $ClusterName
+}
+
 Write-Host "Verifying cluster..."
-& kubectl cluster-info --context "kind-$ClusterName"
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-KindClusterReachable $ClusterName)) {
     Write-Error "Cluster '$ClusterName' is not reachable. Run: kind delete cluster --name $ClusterName"
 }
 
@@ -75,4 +95,4 @@ Write-Host "Applying manifests..."
 & kubectl apply -k deploy/overlays/local
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Cluster ready. Start infra: docker compose up -d"
+Write-Host "Cluster ready. mock-core UI: http://localhost:8090"

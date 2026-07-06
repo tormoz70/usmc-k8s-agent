@@ -2,8 +2,12 @@
 
 Гибридная схема для разработки и ручного E2E-тестирования **usmc-k8s-agent**.
 
+> **Быстрый старт:** `make dev-up` — одна команда поднимает compose (Kafka, MinIO, mock-core UI), kind-кластер с агентом и тестовые pod'ы.  
+> **Тест через UI:** http://localhost:8090 → [§5](#5-тестирование-агента-через-mock-core-ui).  
+> `docker compose up -d` — только инфраструктура без агента.
+
 > Агент по design работает **in-cluster** (ServiceAccount, RBAC, leader election).  
-> Полностью в одном `docker-compose.yml` его не поднять — compose даёт только Kafka и S3, кластер — отдельно (kind).
+> Полностью в одном `docker-compose.yml` его не поднять — compose даёт Kafka, S3 и mock-core UI, кластер — отдельно (kind).
 
 ## Схема
 
@@ -14,10 +18,11 @@
 │  docker compose                                             │
 │    ├── Redpanda (Kafka)      :9092                          │
 │    ├── MinIO (S3)            :9000 / console :9001          │
-│    └── Kafka UI              :8088                          │
+│    ├── Kafka UI              :8088                          │
+│    └── mock-core UI          :8090                          │
 │                                                             │
-│  mock-core (CLI)  ──► k8s.commands.request                  │
-│                     ◄── reply_topic (header)                │
+│  mock-core UI / CLI  ──► k8s.commands.request               │
+│                        ◄── reply_topic (header)             │
 │                                                             │
 │  kind cluster `k8s-agent`                                   │
 │    ├── Deployment k8s-agent (2 replicas, leader election)   │
@@ -31,7 +36,7 @@
 | Managed Kafka | Redpanda (PLAINTEXT) | `docker compose` |
 | AWS S3 | MinIO | `docker compose` |
 | Kubernetes | kind | Docker |
-| Java core-client | `hack/mock-core` | хост |
+| Java core-client | **mock-core UI** (`:8090`) или CLI `hack/mock-core` | compose / хост |
 | mTLS Kafka | не используется локально | — |
 
 ---
@@ -45,10 +50,10 @@
 | **Docker Desktop** / Docker Engine + Compose | да | Redpanda, MinIO, kind, сборка образа агента |
 | **kind** | да | локальный Kubernetes |
 | **kubectl** | да | деплой и отладка |
-| **Go 1.22+** | да* | `mock-core`, локальная сборка (`go test`) |
+| **Go 1.22+** | нет* | локальная сборка агента / CLI `mock-core` (`go test`) |
 | **make** | нет | удобные цели; на Windows без make — команды ниже |
 
-\* **Go можно не ставить**, если собирать `mock-core` через Docker (см. [§5](#5-собрать-mock-core)).
+\* **Go не нужен** для smoke-тестов через **mock-core UI** в compose ([§5](#5-mock-core-ui)). Go понадобится только для сборки агента или CLI `mock-core` на хосте.
 
 ### 1.1 Проверка инструментов (Linux / macOS / Git Bash)
 
@@ -79,12 +84,12 @@ make --version      # если «не распознано» — использ�
 | Симптом | Причина | Решение |
 | --- | --- | --- |
 | `make: не распознано` | GNU Make не установлен | Команды из Makefile вручную (см. [§3](#3-поднять-kind-и-задеплоить-агента)) или `choco install make` |
-| `go: не распознано` при `make mock-core` | Go не установлен / не в PATH | Установить с https://go.dev/dl/ , перезапустить терминал; или сборка mock-core через Docker ([§5](#5-собрать-mock-core)) |
+| `go: не распознано` при `make mock-core` | Go не установлен / не в PATH | Установить с https://go.dev/dl/ , перезапустить терминал; или сборка mock-core через Docker ([§6](#6-cli-mock-core-альтернатива)) |
 | `make kind-up` → `CreateProcess ... bootstrap.sh failed` | bash недоступен | На Windows: `make kind-up` вызывает `hack/bootstrap.ps1`; или `powershell -File hack\bootstrap.ps1` |
 | `kubectl apply -k` → `file ... is not in or below ...` | устаревший overlay | Обновите репозиторий; policy генерируется в `deploy/base`, не через `../../` в overlay |
 | `kind: command not found` | kind не установлен | https://kind.sigs.k8s.io/docs/user/quick-start/#installation |
 | Docker daemon not running | Docker не запущен | Запустите Docker Desktop |
-| `kind create` → kubelet healthz timeout | мало RAM/CPU у Docker или нестабильный node image | См. [§12 kind не создаётся](#kind-не-создаётся-kubelet-healthz--no-nodes-found) |
+| `kind create` → kubelet healthz timeout | мало RAM/CPU у Docker или нестабильный node image | См. [§13 kind не создаётся](#kind-не-создаётся-kubelet-healthz--no-nodes-found) |
 
 ### 1.4 Проверка манифестов (до деплоя)
 
@@ -124,7 +129,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Ожидаемо: сервисы `redpanda`, `minio`, `kafka-ui` в статусе **running**.
+Ожидаемо: сервисы `redpanda`, `minio`, `kafka-ui`, `mock-core-ui` в статусе **running**; `minio-init` завершится с кодом 0 (создаёт bucket `logs-bundles`).
 
 PowerShell — дополнительно проверить порты:
 
@@ -133,6 +138,7 @@ docker compose ps
 Test-NetConnection localhost -Port 9092   # Kafka
 Test-NetConnection localhost -Port 9000   # MinIO S3
 Test-NetConnection localhost -Port 8088   # Kafka UI
+Test-NetConnection localhost -Port 8090   # mock-core UI
 ```
 
 Проверка:
@@ -143,10 +149,19 @@ Test-NetConnection localhost -Port 8088   # Kafka UI
 | MinIO S3 API | `http://localhost:9000` | `minioadmin` / `minioadmin` |
 | MinIO Console | http://localhost:9001 | те же |
 | Kafka UI | http://localhost:8088 | — |
+| **mock-core UI** | **http://localhost:8090** | — |
 
-### Создать bucket в MinIO
+### Bucket `logs-bundles`
 
-Для `logs.collect` нужен bucket `logs-bundles` (см. `test/fixtures/logs-collect.json`):
+Сервис `minio-init` создаёт bucket автоматически при `docker compose up -d`.
+
+Если bucket отсутствует (например, после `docker compose down -v`), перезапустите init:
+
+```powershell
+docker compose up -d minio-init
+```
+
+Ручное создание (альтернатива):
 
 1. Откройте http://localhost:9001
 2. Login: `minioadmin` / `minioadmin`
@@ -189,7 +204,7 @@ kubectl apply -k deploy/overlays/local
 
 Скрипт:
 
-1. Создаёт kind-кластер `k8s-agent` (`hack/kind-config.yaml`)
+1. Создаёт kind-кластер `k8s-agent` (`hack/kind-config.yaml`), либо **пересоздаёт**, если кластер есть, но API недоступен (control-plane остановлен)
 2. Собирает Docker-образ `k8s-agent:dev`
 3. Загружает образ в kind
 4. Применяет `deploy/overlays/local` (Kafka/MinIO → `host.docker.internal`)
@@ -244,11 +259,189 @@ kubectl run test-busybox --image=busybox:1.36 --labels=app=test \
   --command -- sh -c 'while true; do echo hello; sleep 5; done' -n default
 ```
 
+PowerShell (одной строкой, без `\`):
+
+```powershell
+kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
+kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n default
+```
+
 Allow-list policy разрешает namespace `default` и `k8s-agent`.
 
 ---
 
-## 5. Собрать mock-core
+## 5. Тестирование агента через mock-core UI
+
+Основной способ ручного E2E: веб-UI имитирует Java **core-client** — отправляет команды в Kafka и показывает ответы агента.
+
+### 5.1 Подготовка окружения
+
+**Одна команда** (рекомендуется):
+
+```powershell
+make dev-up
+```
+
+Поднимает compose (Kafka, MinIO, mock-core UI), kind-кластер с агентом и test pod'ы `test-nginx` / `test-busybox`.
+
+**Проверьте, что агент готов** (в отдельном терминале):
+
+```powershell
+kubectl get pods -n k8s-agent
+kubectl get pods -n k8s-agent -l k8s-agent/leader=true
+kubectl rollout status deployment/k8s-agent -n k8s-agent
+```
+
+Ожидаемо:
+
+- 2 pod'а `k8s-agent-*` в статусе **Running** и **Ready** (1/1)
+- ровно один pod с label `k8s-agent/leader=true`
+- `docker compose ps` — сервисы `redpanda`, `minio`, `mock-core-ui` в **running**
+
+Откройте в браузере: **http://localhost:8090**
+
+> Если `make dev-up` падает на kind с «cluster is not reachable» — bootstrap автоматически пересоздаёт сломанный кластер. Вручную: `kind delete cluster --name k8s-agent` и снова `make dev-up`.
+
+### 5.2 Интерфейс UI
+
+| Вкладка | Назначение |
+| --- | --- |
+| **Commands** | Шаблон команды, JSON, поле **Reply topic**, кнопка **Send command** |
+| **Responses** | Live-лента ответов из Kafka; фильтр по **Correlation ID** |
+| **S3 Check** | Проверка объекта в MinIO после `logs.collect` |
+
+Поток работы:
+
+```text
+Commands: выбрать шаблон → Send command
+    ↓
+UI публикует в k8s.commands.request (correlation_id + reply_topic)
+    ↓
+k8s-agent (leader) обрабатывает → пишет ответ в reply topic
+    ↓
+Responses: сообщение с тем же correlation_id
+```
+
+После **Send command** UI автоматически переключается на **Responses** и подписывается на reply topic (`core-client.dev.responses` по умолчанию).
+
+**Успешный ответ** — JSON со `"status": "completed"`. Ошибки: `"status": "failed"` или `"rejected"` — смотрите поле `error` / `message` в теле.
+
+### 5.3 Быстрые шаблоны для smoke-теста
+
+После `make dev-up` в dropdown **Template** доступны готовые JSON. Рекомендуемый порядок «за 2 минуты»:
+
+| # | Шаблон | Что проверяет | Ожидание в Responses |
+| --- | --- | --- | --- |
+| 1 | `k8s-api-list-namespaces` | Kafka + apiserver, минимальный запрос | `"status": "completed"`, список namespace'ов |
+| 2 | `k8s-api-list-pods` | list pod'ов с `app=test` | `test-nginx`, `test-busybox` в теле |
+| 3 | `k8s-api-list-deployments` | list Deployment'ов | JSON `items` из `default` |
+| 4 | `cache-put` → `cache-delete` | cache write + delete | оба `"status": "completed"` |
+
+Шаблоны 1–3 — тип `k8s.api`, достаточно **Send command** без дополнительных настроек.
+
+### 5.4 Базовый smoke-test: k8s.api
+
+Проверяет, что агент читает Kafka и ходит в kube-apiserver.
+
+1. Вкладка **Commands**
+2. **Template** → `k8s-api-list-namespaces (k8s.api)` — самый быстрый первый запрос
+3. **Reply topic** — оставьте `core-client.dev.responses`
+4. Нажмите **Send command**
+5. Вкладка **Responses** — через несколько секунд появится сообщение с вашим `correlation_id`
+6. В теле ответа: `"status": "completed"`, в `body` — JSON от apiserver
+
+Для проверки test pod'ов выберите `k8s-api-list-pods` — в ответе должны быть `test-nginx` и `test-busybox`.
+
+Если ответа нет более 1–2 минут — см. [§13 Troubleshooting](#13-troubleshooting).
+
+### 5.5 logs.collect + проверка S3
+
+Нужны test pod'ы с label `app=test` (создаёт `make dev-up`).
+
+1. **Commands** → шаблон `logs-collect (logs.collect)`
+2. **Send command**
+3. В **Responses** дождитесь `"status": "completed"` — в ответе будут `s3_bucket` и `s3_key`
+4. Вкладка **S3 Check** — bucket и key подставятся автоматически из ответа
+5. **Check object** — должны увидеть размер файла и ссылку **Open in MinIO Console**
+
+Альтернатива: http://localhost:9001 → bucket `logs-bundles` → key `logs/test/bundle.zip`.
+
+### 5.6 watch.subscribe — события pod'ов
+
+1. Вкладка **Responses**
+2. **Topic** → `cluster.events`
+3. **Correlation ID** — очистите (слушаем все события)
+4. **Connect stream**
+5. Вкладка **Commands** → шаблон `watch-subscribe-pods (watch.subscribe)` → **Send command**
+6. В другом терминале создайте или удалите pod:
+
+```powershell
+kubectl run demo-pod --image=nginx:1.27 --labels=app=test -n default
+kubectl delete pod demo-pod -n default
+```
+
+7. В **Responses** на topic `cluster.events` появятся события ADDED/DELETED
+
+### 5.7 cache.put + HTTP GET
+
+1. **Commands** → `cache-put (cache.put)` → **Send command**
+2. В **Responses** — `"status": "completed"`
+3. В **отдельном терминале** — port-forward на HTTP API leader pod:
+
+```powershell
+kubectl port-forward -n k8s-agent svc/k8s-agent-http 8080:8080
+```
+
+4. Проверка кэша:
+
+```powershell
+curl http://localhost:8080/v1/cache/feature/payments/new-checkout
+```
+
+Ожидаемо: `"value": "enabled"`.
+
+### 5.8 health.report — периодические snapshots
+
+1. **Responses** → **Topic** `cluster.health` → **Connect stream**
+2. **Commands** → `health-report-start (health.report.start)` → **Send command**
+3. В **Responses** каждые ~60 с приходят snapshot'ы pod'ов из allow-list namespace'ов
+
+Остановка (отдельная команда через UI — отредактируйте JSON или используйте CLI): шаблона `health.report.stop` в fixtures пока нет; для локального теста достаточно перезапуска pod'а агента.
+
+### 5.9 Сводка сценариев
+
+| Что проверяем | Шаблон в UI | Topic в Responses | Дополнительно |
+| --- | --- | --- | --- |
+| Быстрый smoke | `k8s-api-list-namespaces` | reply topic (авто) | — |
+| Test pod'ы | `k8s-api-list-pods` | reply topic (авто) | нужен `make dev-up` |
+| Kafka + apiserver | `k8s-api-list-deployments` | reply topic (авто) | — |
+| Сбор логов → S3 | `logs-collect` | reply topic (авто) | **S3 Check** |
+| Watch pod'ов | `watch-subscribe-pods` | `cluster.events` | создать/удалить pod |
+| Cache write / delete | `cache-put`, `cache-delete` | reply topic (авто) | port-forward :8080 |
+| Health snapshots | `health-report-start` | `cluster.health` | подождать ~60 с |
+
+### 5.10 Запуск UI без Docker (опционально)
+
+```powershell
+make mock-core-ui
+# или:
+go build -o bin/mock-core-ui ./hack/mock-core-ui
+
+$env:KAFKA_BROKERS="localhost:9092"
+$env:S3_ENDPOINT="http://localhost:9000"
+$env:FIXTURES_DIR="test/fixtures"
+.\bin\mock-core-ui.exe
+```
+
+UI доступен на http://localhost:8090. Compose и kind должны быть уже запущены.
+
+---
+
+## 6. CLI mock-core (альтернатива)
+
+CLI полезен для скриптов и CI. Для ручного E2E предпочтительнее [§5](#5-mock-core-ui).
+
+### 6.0 Сборка
 
 **С Go (Linux / macOS / Windows):**
 
@@ -285,9 +478,17 @@ Reply topic по умолчанию: `core-client.dev.responses` (создаёт
 
 ---
 
-## 6. Отправка команд (smoke-тесты)
+## 7. Отправка команд (smoke-тесты)
 
-### 6.1 k8s.api — list deployments
+### 7.1 Через mock-core UI (рекомендуется)
+
+Пошаговые инструкции — в [§5](#5-тестирование-агента-через-mock-core-ui).
+
+Кратко: `make dev-up` → http://localhost:8090 → шаблон `k8s-api-list-deployments` → **Send command** → ответ на вкладке **Responses**.
+
+### 7.2 Через CLI mock-core
+
+#### 7.2.1 k8s.api — list deployments
 
 ```bash
 bin/mock-core -file test/fixtures/k8s-api-list-deployments.json
@@ -295,7 +496,7 @@ bin/mock-core -file test/fixtures/k8s-api-list-deployments.json
 
 Ответ приходит в stdout (ожидание до 2 мин). Статус `completed`, тело — JSON от apiserver.
 
-### 6.2 cache.put + HTTP GET
+### 7.2.2 cache.put + HTTP GET
 
 ```bash
 bin/mock-core -file test/fixtures/cache-put.json
@@ -307,7 +508,7 @@ bin/mock-core -file test/fixtures/cache-put.json
 curl http://localhost:8080/v1/cache/feature/payments/new-checkout
 ```
 
-### 6.3 watch.subscribe
+### 7.2.3 watch.subscribe
 
 Терминал 1 — слушать события:
 
@@ -323,7 +524,7 @@ bin/mock-core -file test/fixtures/watch-subscribe-pods.json
 
 Создайте/удалите pod в `default` — в терминале 1 появятся события в `cluster.events`.
 
-### 6.4 logs.collect → MinIO
+### 7.2.4 logs.collect → MinIO
 
 ```bash
 bin/mock-core -file test/fixtures/logs-collect.json
@@ -331,7 +532,7 @@ bin/mock-core -file test/fixtures/logs-collect.json
 
 Проверьте объект в MinIO Console: bucket `logs-bundles`, key `logs/test/bundle.zip`.
 
-### 6.5 health.report
+### 7.2.5 health.report
 
 Терминал 1:
 
@@ -347,7 +548,7 @@ bin/mock-core -file test/fixtures/health-report-start.json
 
 Каждые 60s в `cluster.health` приходит snapshot pod'ов.
 
-### 6.6 agent.lifecycle (failover)
+### 7.2.6 agent.lifecycle (failover)
 
 Терминал 1:
 
@@ -363,7 +564,7 @@ bash hack/chaos-leader-failover.sh
 
 Ожидаемо: событие `agent.started` / `agent.leader.changed` при смене leader.
 
-### 6.7 Слушать только reply topic
+### 7.2.7 Слушать только reply topic
 
 ```bash
 bin/mock-core -listen -reply-topic core-client.dev.responses
@@ -371,7 +572,7 @@ bin/mock-core -listen -reply-topic core-client.dev.responses
 
 ---
 
-## 7. Альтернатива: агент на хосте (без leader election)
+## 8. Альтернатива: агент на хосте (без leader election)
 
 Если kind не нужен, но есть kubeconfig на реальный/локальный кластер:
 
@@ -392,7 +593,7 @@ go run ./cmd/agent --dev-no-leader-election
 
 ---
 
-## 8. Переменные окружения (справочно)
+## 9. Переменные окружения (справочно)
 
 | Переменная | Default (local) | Описание |
 | --- | --- | --- |
@@ -412,7 +613,7 @@ go run ./cmd/agent --dev-no-leader-election
 
 ---
 
-## 9. Kafka UI
+## 10. Kafka UI
 
 http://localhost:8088 — просмотр топиков, сообщений, consumer groups.
 
@@ -427,7 +628,7 @@ http://localhost:8088 — просмотр топиков, сообщений, c
 
 ---
 
-## 10. Пересборка после изменений кода
+## 11. Пересборка после изменений кода
 
 ```bash
 docker build -t k8s-agent:dev .
@@ -438,7 +639,7 @@ kubectl rollout status deployment/k8s-agent -n k8s-agent
 
 ---
 
-## 11. Остановка и очистка
+## 12. Остановка и очистка
 
 ```bash
 # удалить агента из kind (кластер остаётся)
@@ -456,7 +657,7 @@ docker compose down -v
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 ### kind не создаётся (kubelet healthz / no nodes found)
 
@@ -566,7 +767,7 @@ kubectl rollout restart deployment/k8s-agent -n k8s-agent
 | Симптом | Решение |
 | --- | --- |
 | `make` не найден | Команды из Makefile вручную или `choco install make` |
-| `go` не найден при `make mock-core` | Установить Go или собрать mock-core через Docker ([§5](#5-собрать-mock-core)) |
+| `go` не найден при `make mock-core` | Установить Go или собрать mock-core через Docker ([§6](#6-cli-mock-core-альтернатива)) |
 | `bootstrap.sh` / bash не найден | `powershell -File hack\bootstrap.ps1` или обновлённый `make kind-up` |
 | `grep` не распознано | В PowerShell: `Select-String "cache.put"` вместо `grep cache.put` |
 | `host.docker.internal` | Поддерживается Docker Desktop на Windows |
@@ -576,9 +777,35 @@ kubectl rollout restart deployment/k8s-agent -n k8s-agent
 
 ---
 
-## 13. Быстрый чеклист «всё поднять с нуля»
+## 14. Быстрый чеклист «всё поднять с нуля»
 
-### Шаг 0 — проверка окружения
+### Одна команда (рекомендуется)
+
+```powershell
+make dev-up
+# или: powershell -File hack\dev-up.ps1
+```
+
+Поднимает: compose (Kafka, MinIO, mock-core UI, bucket `logs-bundles`) → kind + agent → test pods.
+
+**Smoke-тест после запуска:**
+
+1. http://localhost:8090
+2. **Commands** → `k8s-api-list-deployments` → **Send command**
+3. **Responses** → `"status": "completed"`
+
+Подробнее — [§5](#5-тестирование-агента-через-mock-core-ui).
+
+Остановка:
+
+```powershell
+make dev-down          # compose down + удалить agent из kind (кластер остаётся)
+make dev-down-full     # + kind delete cluster
+```
+
+### Пошагово (если нужен контроль)
+
+#### Шаг 0 — проверка окружения
 
 ```powershell
 docker version
@@ -593,10 +820,10 @@ kubectl kustomize deploy/overlays/local | Select-String "cache.put"
 ### Шаг 1–5 — запуск
 
 ```powershell
-# 1. Инфра
+# 1. Инфра (Kafka, MinIO, mock-core UI, bucket logs-bundles)
 docker compose up -d
 docker compose ps
-# → создать bucket logs-bundles в http://localhost:9001
+# → mock-core UI: http://localhost:8090
 
 # 2. Кластер + агент
 make kind-up
@@ -608,13 +835,10 @@ kubectl get pods -n k8s-agent -l k8s-agent/leader=true
 
 # 4. Test pods
 kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
+kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n default
 
-# 5. CLI + smoke
-make mock-core
-# или: go build -o bin\mock-core.exe .\hack\mock-core
-bin\mock-core.exe -file test\fixtures\k8s-api-list-deployments.json
-bin\mock-core.exe -file test\fixtures\cache-put.json
-bin\mock-core.exe -file test\fixtures\watch-subscribe-pods.json
+# 5. Smoke через UI
+# Откройте http://localhost:8090 → шаблон k8s-api-list-deployments → Send command
 ```
 
 Linux / macOS — те же шаги, пути через `/` и `bin/mock-core`.
