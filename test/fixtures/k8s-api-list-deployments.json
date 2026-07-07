@@ -1,0 +1,16 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-test-get-deploy",
+  "type": "k8s.api",
+  "issuer": "mock-core",
+  "idempotency_key": "default/apps/v1/deployments/test/get",
+  "timeout": "30s",
+  "issued_at": "2026-07-05T00:00:00Z",
+  "http": {
+    "method": "GET",
+    "path": "/apis/apps/v1/namespaces/default/deployments",
+    "headers": {
+      "Accept": "application/json"
+    }
+  }
+}

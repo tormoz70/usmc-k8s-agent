@@ -1,0 +1,14 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-test-cache-delete",
+  "type": "cache.delete",
+  "issuer": "mock-core",
+  "idempotency_key": "cache/feature-flags/delete-new-checkout",
+  "timeout": "30s",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "keys": [
+      "feature/payments/new-checkout"
+    ]
+  }
+}

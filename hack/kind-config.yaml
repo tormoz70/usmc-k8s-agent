@@ -1,0 +1,9 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# Pin a stable node image (matches client-go v0.31.x in go.mod).
+# kind default may pull v1.35+ which often fails on Docker Desktop (Windows).
+networking:
+  apiServerAddress: 127.0.0.1
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.2

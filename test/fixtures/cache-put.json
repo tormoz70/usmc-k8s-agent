@@ -1,0 +1,18 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-040-cache-put",
+  "type": "cache.put",
+  "issuer": "core-client",
+  "idempotency_key": "cache/feature-flags/v42",
+  "timeout": "30s",
+  "issued_at": "2026-07-04T20:00:00Z",
+  "payload": {
+    "entries": [
+      {
+        "key": "feature/payments/new-checkout",
+        "value": "enabled",
+        "ttl_seconds": 3600
+      }
+    ]
+  }
+}

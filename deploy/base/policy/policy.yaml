@@ -1,0 +1,42 @@
+deny_secrets: true
+
+allowed_command_types:
+  - k8s.api
+  - logs.collect
+  - watch.subscribe
+  - watch.unsubscribe
+  - cache.put
+  - cache.delete
+  - cache.clear
+  - logs.stream.start
+  - logs.stream.stop
+  - health.report.start
+  - health.report.stop
+
+allowed_verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+  - apply
+
+allowed_gvk:
+  - { group: "", version: "v1", kind: "Pod" }
+  - { group: "", version: "v1", kind: "Service" }
+  - { group: "", version: "v1", kind: "ConfigMap" }
+  - { group: "", version: "v1", kind: "Event" }
+  - { group: apps, version: v1, kind: Deployment }
+  - { group: apps.openshift.io, version: v1, kind: DeploymentConfig }
+  - { group: networking.istio.io, version: v1, kind: VirtualService }
+  - { group: networking.istio.io, version: v1, kind: DestinationRule }
+  - { group: networking.istio.io, version: v1, kind: Gateway }
+  - { group: networking.istio.io, version: v1, kind: AuthorizationPolicy }
+  - { group: rbac.authorization.k8s.io, version: v1, kind: Role }
+  - { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding }
+
+allowed_namespaces:
+  - default
+  - k8s-agent

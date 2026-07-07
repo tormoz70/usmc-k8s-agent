@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-watch-pods",
+  "type": "watch.subscribe",
+  "issuer": "mock-core",
+  "idempotency_key": "watch/default/pods/sub-1",
+  "timeout": "24h",
+  "issued_at": "2026-07-05T00:00:00Z",
+  "payload": {
+    "subscription_id": "sub-pods-default",
+    "gvk": { "group": "", "version": "v1", "kind": "Pod" },
+    "namespace": "default",
+    "label_selector": "",
+    "event_filter": ["ADDED", "MODIFIED", "DELETED", "RESTART"],
+    "output_topic": "cluster.events"
+  }
+}

@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-api
+  namespace: payments
+  labels:
+    app: billing-api
+    app.kubernetes.io/part-of: test-data
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: billing-api
+  template:
+    metadata:
+      labels:
+        app: billing-api
+        app.kubernetes.io/part-of: test-data
+    spec:
+      containers:
+        - name: api
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              i=0
+              while true; do
+                i=$((i+1))
+                echo "$(date -u +%H:%M:%S) [payments/billing-api] charge id=$i amount=9.99"
+                sleep 2
+              done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: logger
+  namespace: payments
+  labels:
+    app: test
+    logger: payments
+    app.kubernetes.io/part-of: test-data
+spec:
+  containers:
+    - name: logger
+      image: busybox:1.36
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          while true; do
+            echo "$(date -u +%H:%M:%S) [payments/logger] audit trail entry"
+            sleep 3
+          done

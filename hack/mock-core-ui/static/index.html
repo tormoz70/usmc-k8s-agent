@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mock-core UI</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #22c55e;
+      --error: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    header p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.875rem; }
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      padding: 1rem 1.5rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--muted);
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem 0.5rem 0 0;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    .tab.active {
+      background: var(--panel);
+      color: var(--text);
+      border-color: var(--border);
+      border-bottom-color: var(--panel);
+    }
+    main { padding: 1.5rem; max-width: 1100px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    input, select, textarea, button {
+      font: inherit;
+      border-radius: 0.375rem;
+    }
+    input, select, textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.75rem;
+    }
+    textarea {
+      min-height: 280px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      resize: vertical;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+    .actions { display: flex; gap: 0.75rem; align-items: center; margin-top: 1rem; }
+    button.primary {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 0.55rem 1.25rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 0.55rem 1rem;
+      cursor: pointer;
+    }
+    .status {
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+    .status.waiting { color: var(--warn); }
+    .status.ok { color: var(--success); }
+    .status.err { color: var(--error); }
+    .messages {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 520px;
+      overflow-y: auto;
+    }
+    .message {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+    }
+    .message-meta {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .message pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8125rem;
+    }
+    .s3-result {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+    .s3-result a { color: var(--accent); }
+    .empty { color: var(--muted); font-size: 0.875rem; padding: 2rem 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>mock-core UI</h1>
+    <p>Local core-client simulator — send commands, watch Kafka replies, verify S3 uploads</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="commands">Commands</button>
+    <button class="tab" data-tab="responses">Responses</button>
+    <button class="tab" data-tab="s3">S3 Check</button>
+  </nav>
+
+  <main>
+    <section id="panel-commands" class="panel active">
+      <div class="row">
+        <div>
+          <label for="template">Template</label>
+          <select id="template"></select>
+        </div>
+        <div>
+          <label for="reply-topic">Reply topic</label>
+          <input id="reply-topic" type="text" placeholder="core-client.dev.responses">
+        </div>
+      </div>
+      <label for="command-body">Command JSON</label>
+      <textarea id="command-body" spellcheck="false"></textarea>
+      <div class="actions">
+        <button class="primary" id="send-btn">Send command</button>
+        <span class="status" id="send-status"></span>
+      </div>
+    </section>
+
+    <section id="panel-responses" class="panel">
+      <div class="row">
+        <div>
+          <label for="stream-topic">Topic</label>
+          <select id="stream-topic"></select>
+        </div>
+        <div>
+          <label for="correlation-id">Correlation ID filter</label>
+          <input id="correlation-id" type="text" placeholder="corr-...">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="connect-btn">Connect stream</button>
+        <button class="secondary" id="clear-btn">Clear</button>
+        <span class="status" id="stream-status">Disconnected</span>
+      </div>
+      <div class="messages" id="messages">
+        <div class="empty">Connect to a topic to see messages</div>
+      </div>
+    </section>
+
+    <section id="panel-s3" class="panel">
+      <div class="row">
+        <div>
+          <label for="s3-bucket">Bucket</label>
+          <input id="s3-bucket" type="text" placeholder="logs-bundles">
+        </div>
+        <div>
+          <label for="s3-key">Key</label>
+          <input id="s3-key" type="text" placeholder="logs/test/bundle.zip">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="s3-check-btn">Check object</button>
+        <span class="status" id="s3-status"></span>
+      </div>
+      <div id="s3-result"></div>
+    </section>
+  </main>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    const panels = document.querySelectorAll('.panel');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        panels.forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    function switchTab(name) {
+      tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      panels.forEach(p => p.classList.remove('active'));
+      document.getElementById('panel-' + name).classList.add('active');
+    }
+
+    let templates = [];
+    let topics = [];
+    let eventSource = null;
+    let lastCorrelationId = '';
+
+    async function loadConfig() {
+      const [tplRes, topRes] = await Promise.all([
+        fetch('/api/templates'),
+        fetch('/api/topics'),
+      ]);
+      const tplData = await tplRes.json();
+      const topData = await topRes.json();
+      templates = tplData.templates || [];
+      topics = topData.topics || [];
+      document.getElementById('reply-topic').value = topData.reply_topic || '';
+
+      const tplSelect = document.getElementById('template');
+      tplSelect.innerHTML = '<option value="">— select template —</option>';
+      templates.forEach((t, i) => {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = t.type ? `${t.name} (${t.type})` : t.name;
+        tplSelect.appendChild(opt);
+      });
+
+      const topicSelect = document.getElementById('stream-topic');
+      topicSelect.innerHTML = '';
+      topics.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        topicSelect.appendChild(opt);
+      });
+      topicSelect.value = topData.reply_topic || topics[0] || '';
+    }
+
+    function formatCommandBody(body) {
+      const obj = typeof body === 'string' ? JSON.parse(body) : body;
+      return JSON.stringify(obj, null, 2);
+    }
+
+    function applyTemplate(idx) {
+      if (idx === '') return;
+      const t = templates[Number(idx)];
+      if (!t) return;
+      document.getElementById('command-body').value = formatCommandBody(t.body);
+    }
+
+    document.getElementById('template').addEventListener('change', e => {
+      applyTemplate(e.target.value);
+    });
+
+    function setStatus(el, text, cls) {
+      el.textContent = text;
+      el.className = 'status' + (cls ? ' ' + cls : '');
+    }
+
+    function addMessage(msg) {
+      const container = document.getElementById('messages');
+      const empty = container.querySelector('.empty');
+      if (empty) empty.remove();
+
+      const div = document.createElement('div');
+      div.className = 'message';
+      const meta = document.createElement('div');
+      meta.className = 'message-meta';
+      meta.textContent = `[${msg.topic}] offset=${msg.offset} correlation_id=${msg.correlation_id || '—'} @ ${msg.timestamp || ''}`;
+      const pre = document.createElement('pre');
+      pre.textContent = typeof msg.body === 'string' ? msg.body : JSON.stringify(msg.body, null, 2);
+      div.appendChild(meta);
+      div.appendChild(pre);
+      container.prepend(div);
+
+      try {
+        const body = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
+        if (body && body.s3_bucket && body.s3_key) {
+          document.getElementById('s3-bucket').value = body.s3_bucket;
+          document.getElementById('s3-key').value = body.s3_key;
+        }
+      } catch (_) {}
+    }
+
+    function connectStream() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      const topic = document.getElementById('stream-topic').value;
+      const corr = document.getElementById('correlation-id').value.trim();
+      const params = new URLSearchParams({ topic });
+      if (corr) params.set('correlation_id', corr);
+
+      const statusEl = document.getElementById('stream-status');
+      setStatus(statusEl, 'Connecting…', 'waiting');
+
+      eventSource = new EventSource('/api/messages/stream?' + params.toString());
+      eventSource.addEventListener('connected', () => {
+        setStatus(statusEl, `Connected to ${topic}`, 'ok');
+      });
+      eventSource.addEventListener('message', ev => {
+        addMessage(JSON.parse(ev.data));
+      });
+      eventSource.addEventListener('error', () => {
+        setStatus(statusEl, 'Stream error or closed', 'err');
+      });
+    }
+
+    document.getElementById('send-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('send-status');
+      let body;
+      try {
+        body = JSON.parse(document.getElementById('command-body').value);
+      } catch (e) {
+        setStatus(statusEl, 'Invalid JSON', 'err');
+        return;
+      }
+      setStatus(statusEl, 'Sending…', 'waiting');
+      try {
+        const res = await fetch('/api/commands', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            body,
+            reply_topic: document.getElementById('reply-topic').value.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        lastCorrelationId = data.correlation_id;
+        setStatus(statusEl, `Sent ${data.correlation_id}`, 'ok');
+        document.getElementById('correlation-id').value = data.correlation_id;
+        document.getElementById('stream-topic').value = data.reply_topic;
+        switchTab('responses');
+        connectStream();
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    });
+
+    document.getElementById('connect-btn').addEventListener('click', connectStream);
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      document.getElementById('messages').innerHTML = '<div class="empty">No messages yet</div>';
+    });
+
+    document.getElementById('s3-check-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('s3-status');
+      const bucket = document.getElementById('s3-bucket').value.trim();
+      const key = document.getElementById('s3-key').value.trim();
+      if (!bucket || !key) {
+        setStatus(statusEl, 'Bucket and key required', 'err');
+        return;
+      }
+      setStatus(statusEl, 'Checking…', 'waiting');
+      const resultEl = document.getElementById('s3-result');
+      resultEl.innerHTML = '';
+      try {
+        const params = new URLSearchParams({ bucket, key });
+        const res = await fetch('/api/s3/head?' + params.toString());
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setStatus(statusEl, 'Object found', 'ok');
+        resultEl.innerHTML = `
+          <div class="s3-result">
+            <p><strong>Exists:</strong> ${data.exists}</p>
+            <p><strong>Size:</strong> ${data.size} bytes</p>
+            <p><strong>ETag:</strong> ${data.etag || '—'}</p>
+            <p><strong>Content-Type:</strong> ${data.content_type || '—'}</p>
+            <p><strong>Last modified:</strong> ${data.last_modified || '—'}</p>
+            ${data.console_url ? `<p><a href="${data.console_url}" target="_blank" rel="noopener">Open in MinIO Console</a></p>` : ''}
+          </div>`;
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    });
+
+    loadConfig().catch(err => console.error(err));
+  </script>
+</body>
+</html>
