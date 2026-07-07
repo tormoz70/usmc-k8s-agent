@@ -1,0 +1,18 @@
+{
+  "command_id": "test-list-001",
+  "idempotency_key": "dev:list:001",
+  "type": "resource.list",
+  "issued_by": "core-prod",
+  "ts": "2026-06-29T12:00:00Z",
+  "dry_run": false,
+  "target": {
+    "group": "",
+    "version": "v1",
+    "kind": "Pod",
+    "namespace": "app"
+  },
+  "payload": {
+    "output_format": "yaml",
+    "limit": 50
+  }
+}

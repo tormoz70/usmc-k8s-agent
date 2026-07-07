@@ -1,0 +1,149 @@
+# Lightweight in-cluster Kafka (Redpanda) and MinIO when Helm charts fail to download.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: kafka
+  labels:
+    app.kubernetes.io/name: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
+          command:
+            - rpk
+            - redpanda
+            - start
+            - --overprovisioned
+            - --smp
+            - "1"
+            - --memory
+            - "512M"
+            - --reserve-memory
+            - "0M"
+            - --mode
+            - dev-container
+            - --kafka-addr
+            - internal://0.0.0.0:9092
+            - --advertise-kafka-addr
+            - internal://kafka.kafka.svc.cluster.local:9092
+          ports:
+            - containerPort: 9092
+              name: kafka
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 10
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: kafka
+  labels:
+    app.kubernetes.io/name: kafka
+spec:
+  selector:
+    app.kubernetes.io/name: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: minio
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+            - name: MINIO_ROOT_PASSWORD
+              value: minioadmin
+          ports:
+            - containerPort: 9000
+              name: api
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init-buckets
+  namespace: minio
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mc alias set local http://minio.minio.svc.cluster.local:9000 minioadmin minioadmin
+              mc mb --ignore-existing local/exports
+              mc mb --ignore-existing local/logs
+              echo buckets ready
