@@ -1,0 +1,19 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-log-stream-logger-a",
+  "type": "logs.stream.start",
+  "issuer": "mock-core",
+  "idempotency_key": "logs/stream/test-namespace-1/logger-a",
+  "timeout": "24h",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "log-stream-logger-a",
+    "namespace": "test-namespace-1",
+    "pod": "logger-a",
+    "container": "logger",
+    "follow": true,
+    "tail_lines": 20,
+    "output_topic": "logs.stream",
+    "ttl_seconds": 120
+  }
+}

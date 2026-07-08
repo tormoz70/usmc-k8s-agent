@@ -4,17 +4,32 @@ kind: Kustomization
 resources:
   - ../../base
 
+generatorOptions:
+  disableNameSuffixHash: true
+
 configMapGenerator:
   - name: k8s-agent-policy
     behavior: merge
     files:
       - namespaces.yaml=policy/namespaces.yaml
 
+secretGenerator:
+  - name: k8s-agent-internal-token
+    literals:
+      - token=local-dev-internal-token
+
 patches:
   - patch: |-
       - op: replace
-        path: /spec/template/spec/containers/0/env/3/value
+        path: /spec/template/spec/containers/0/env/7/value
         value: host.docker.internal:9092
     target:
       kind: Deployment
-      name: k8s-agent
+      name: egress
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/8/value
+        value: http://host.docker.internal:9000
+    target:
+      kind: Deployment
+      name: agent-service

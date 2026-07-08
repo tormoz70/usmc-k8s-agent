@@ -10,6 +10,7 @@ func TestCommandValidate(t *testing.T) {
 		SchemaVersion:  SchemaVersionV1,
 		CommandID:      "cmd-1",
 		Type:           TypeK8sAPI,
+		Issuer:         "mock-core",
 		IdempotencyKey: "key-1",
 		IssuedAt:       time.Now().UTC(),
 	}

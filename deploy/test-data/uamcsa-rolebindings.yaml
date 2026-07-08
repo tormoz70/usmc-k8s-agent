@@ -1,9 +1,9 @@
-# Namespace-scoped RoleBindings: grant uamcsa (in k8s-agent) access from each test namespace.
+# Namespace-scoped RoleBindings: grant uamcsa (in uamc-agent) access from each test namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: uamcsa-agent
-  namespace: default
+  namespace: test-namespace-1
   labels:
     app.kubernetes.io/part-of: test-data
 roleRef:
@@ -13,13 +13,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: uamcsa
-    namespace: k8s-agent
+    namespace: uamc-agent
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: uamcsa-agent
-  namespace: payments
+  namespace: test-namespace-2
   labels:
     app.kubernetes.io/part-of: test-data
 roleRef:
@@ -29,36 +29,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: uamcsa
-    namespace: k8s-agent
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: uamcsa-agent
-  namespace: catalog
-  labels:
-    app.kubernetes.io/part-of: test-data
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: k8s-agent
-subjects:
-  - kind: ServiceAccount
-    name: uamcsa
-    namespace: k8s-agent
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: uamcsa-agent
-  namespace: demo
-  labels:
-    app.kubernetes.io/part-of: test-data
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: k8s-agent
-subjects:
-  - kind: ServiceAccount
-    name: uamcsa
-    namespace: k8s-agent
+    namespace: uamc-agent

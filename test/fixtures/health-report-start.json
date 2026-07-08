@@ -3,16 +3,17 @@
   "command_id": "cmd-050-health-start",
   "type": "health.report.start",
   "issuer": "core-client",
-  "idempotency_key": "health/report/default",
+  "idempotency_key": "health/report/test-namespace-1",
   "timeout": "24h",
   "issued_at": "2026-07-04T20:00:00Z",
   "payload": {
     "subscription_id": "health-sub-001",
-    "interval_seconds": 60,
-    "namespaces": ["default"],
+    "interval_seconds": 30,
+    "namespaces": ["test-namespace-1"],
     "label_selector": "",
     "include_not_ready_only": false,
     "output_topic": "cluster.health",
-    "max_pods_per_message": 500
+    "max_pods_per_message": 500,
+    "ttl_seconds": 600
   }
 }

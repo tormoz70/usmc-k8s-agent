@@ -54,15 +54,24 @@ Write-Host "`n[2/4] Waiting for infra..."
 Wait-TcpPort "localhost" 9092 $InfraTimeoutSec
 Wait-TcpPort "localhost" 9000 $InfraTimeoutSec
 Wait-HttpOk "http://localhost:8090/api/health" $InfraTimeoutSec
+Write-Host "Ensuring Kafka topics..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File hack/kafka-init.ps1
 Write-Host "Infra is ready."
 
 Write-Host "`n[3/4] Bootstrapping kind cluster and deploying agent..."
 & powershell -NoProfile -ExecutionPolicy Bypass -File hack/bootstrap.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Waiting for k8s-agent rollout..."
-& kubectl rollout status deployment/k8s-agent -n k8s-agent --timeout=120s
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "Waiting for uamc-agent rollouts..."
+foreach ($dep in @("ingress", "egress", "agent-service")) {
+    & kubectl rollout status "deployment/$dep" -n uamc-agent --timeout=120s
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "`nRollout failed for deployment/$dep. Pod status:" -ForegroundColor Red
+        & kubectl get pods -n uamc-agent -l "app.kubernetes.io/component=$dep"
+        & kubectl describe pods -n uamc-agent -l "app.kubernetes.io/component=$dep" | Select-String -Pattern "Error|Warning|Failed|secret" -Context 0,1
+        exit $LASTEXITCODE
+    }
+}
 
 Write-Host "`n[4/4] Seeding test cluster data..."
 & powershell -NoProfile -ExecutionPolicy Bypass -File hack/seed-test-data.ps1
@@ -75,6 +84,6 @@ Write-Host "  Kafka UI:      http://localhost:8088"
 Write-Host "  MinIO Console: http://localhost:9001"
 Write-Host ""
 Write-Host "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
-Write-Host "  kubectl logs -n default logger-a -f"
+Write-Host "  kubectl logs -n test-namespace-1 logger-a -f"
 Write-Host ""
 Write-Host "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"

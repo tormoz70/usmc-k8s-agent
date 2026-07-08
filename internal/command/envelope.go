@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,9 @@ func (c *Command) Validate() error {
 	}
 	if c.Type == "" {
 		return fmt.Errorf("type is required")
+	}
+	if strings.TrimSpace(c.Issuer) == "" {
+		return fmt.Errorf("issuer is required")
 	}
 	if c.IdempotencyKey == "" {
 		return fmt.Errorf("idempotency_key is required")

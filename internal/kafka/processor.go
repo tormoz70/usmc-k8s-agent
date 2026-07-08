@@ -12,24 +12,31 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/result"
 )
 
+// CommandExecutor runs a decoded command.
+type CommandExecutor interface {
+	Handle(ctx context.Context, cmd *command.Command, meta command.RequestMeta) (*result.Response, error)
+}
+
 // Processor handles the consume → commit → route → publish loop sequentially.
 type Processor struct {
 	consumer    *Consumer
 	publisher   *Publisher
-	router      *command.Router
+	executor    CommandExecutor
+	guard       *CommandGuard
 	metrics     *observability.Metrics
 	log         *slog.Logger
 	commitFirst bool
 }
 
-func NewProcessor(consumer *Consumer, publisher *Publisher, router *command.Router, commitOnReceive bool, metrics *observability.Metrics, log *slog.Logger) *Processor {
+func NewProcessor(consumer *Consumer, publisher *Publisher, executor CommandExecutor, guard *CommandGuard, commitOnReceive bool, metrics *observability.Metrics, log *slog.Logger) *Processor {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Processor{
 		consumer:    consumer,
 		publisher:   publisher,
-		router:      router,
+		executor:    executor,
+		guard:       guard,
 		metrics:     metrics,
 		log:         log,
 		commitFirst: commitOnReceive,
@@ -50,37 +57,54 @@ func (p *Processor) Run(ctx context.Context) error {
 }
 
 func (p *Processor) handleMessage(ctx context.Context, msg kafkago.Message) error {
+	cmd, meta, err := ParseCommand(msg)
+	if err != nil {
+		p.log.Warn("invalid kafka message", "error", err)
+		return p.commit(ctx, msg)
+	}
+
+	if p.guard != nil {
+		if err := p.guard.Validate(cmd, meta); err != nil {
+			p.log.Warn("command rejected by kafka guard", "error", err, "command_id", cmd.CommandID, "issuer", cmd.Issuer, "reply_topic", meta.ReplyTopic)
+			if p.guard.CanPublishReply(meta.ReplyTopic) {
+				started := time.Now().UTC()
+				resp := result.Rejected(cmd.CommandID, meta.CorrelationID, "PolicyDenied", "KAFKA_GUARD", err.Error(), started, time.Now().UTC())
+				if pubErr := p.publisher.PublishResponse(ctx, meta.ReplyTopic, meta.CorrelationID, resp); pubErr != nil {
+					return pubErr
+				}
+			}
+			return p.commit(ctx, msg)
+		}
+	}
+
 	if p.commitFirst {
 		if err := p.consumer.CommitMessage(ctx, msg); err != nil {
 			return err
 		}
 	}
 
-	cmd, meta, err := ParseCommand(msg)
-	if err != nil {
-		p.log.Warn("invalid kafka message", "error", err)
-		return nil
-	}
-
 	started := time.Now()
-	resp, err := p.router.Handle(ctx, cmd, meta)
+	resp, err := p.executor.Handle(ctx, cmd, meta)
 	if err != nil {
 		return err
 	}
 	if resp == nil {
 		p.recordCommand(cmd.Type, "async", started)
-		return nil
+		return p.commit(ctx, msg)
 	}
 
 	if err := p.publisher.PublishResponse(ctx, meta.ReplyTopic, meta.CorrelationID, resp); err != nil {
 		return err
 	}
 	p.recordCommand(cmd.Type, resp.Status, started)
+	return p.commit(ctx, msg)
+}
 
-	if !p.commitFirst {
-		return p.consumer.CommitMessage(ctx, msg)
+func (p *Processor) commit(ctx context.Context, msg kafkago.Message) error {
+	if p.commitFirst {
+		return nil
 	}
-	return nil
+	return p.consumer.CommitMessage(ctx, msg)
 }
 
 func (p *Processor) recordCommand(commandType, status string, started time.Time) {
@@ -95,5 +119,5 @@ func (p *Processor) HandleOnce(ctx context.Context, msg kafkago.Message) (*resul
 	if err != nil {
 		return nil, err
 	}
-	return p.router.Handle(ctx, cmd, meta)
+	return p.executor.Handle(ctx, cmd, meta)
 }

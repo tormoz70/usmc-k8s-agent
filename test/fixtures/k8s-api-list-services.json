@@ -3,12 +3,12 @@
   "command_id": "cmd-test-list-services",
   "type": "k8s.api",
   "issuer": "mock-core",
-  "idempotency_key": "default/v1/services/list",
+  "idempotency_key": "test-namespace-1/v1/services/list",
   "timeout": "30s",
   "issued_at": "2026-07-06T00:00:00Z",
   "http": {
     "method": "GET",
-    "path": "/api/v1/namespaces/default/services",
+    "path": "/api/v1/namespaces/test-namespace-1/services",
     "headers": {
       "Accept": "application/json"
     }

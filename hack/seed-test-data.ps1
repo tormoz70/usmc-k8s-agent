@@ -10,12 +10,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Waiting for deployments..."
 $deployments = @(
-    @{ ns = "default"; name = "web" },
-    @{ ns = "default"; name = "api" },
-    @{ ns = "payments"; name = "billing-api" },
-    @{ ns = "catalog"; name = "products" },
-    @{ ns = "catalog"; name = "indexer" },
-    @{ ns = "demo"; name = "worker" }
+    @{ ns = "test-namespace-1"; name = "web" },
+    @{ ns = "test-namespace-1"; name = "api" },
+    @{ ns = "test-namespace-1"; name = "billing-api" },
+    @{ ns = "test-namespace-2"; name = "products" },
+    @{ ns = "test-namespace-2"; name = "indexer" },
+    @{ ns = "test-namespace-2"; name = "worker" }
 )
 foreach ($d in $deployments) {
     & kubectl rollout status "deployment/$($d.name)" -n $d.ns --timeout=90s
@@ -25,5 +25,5 @@ foreach ($d in $deployments) {
 Write-Host ""
 Write-Host "Test data ready:"
 Write-Host "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
-Write-Host "  kubectl logs -n default logger-a -f"
-Write-Host "  kubectl logs -n payments deploy/billing-api -f"
+Write-Host "  kubectl logs -n test-namespace-1 logger-a -f"
+Write-Host "  kubectl logs -n test-namespace-1 deploy/billing-api -f"

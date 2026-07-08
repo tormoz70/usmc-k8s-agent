@@ -1,29 +1,49 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-agent
-  namespace: k8s-agent
+  name: ingress
+  namespace: uamc-agent
   labels:
-    app: k8s-agent
+    app.kubernetes.io/part-of: uamc-agent
+    app.kubernetes.io/component: ingress
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: k8s-agent
+      app.kubernetes.io/part-of: uamc-agent
+      app.kubernetes.io/component: ingress
   template:
     metadata:
       labels:
-        app: k8s-agent
+        app.kubernetes.io/part-of: uamc-agent
+        app.kubernetes.io/component: ingress
     spec:
       serviceAccountName: uamcsa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-        - name: agent
+        - name: gateway
           image: k8s-agent:dev
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: 8080
           env:
+            - name: AGENT_COMPONENT
+              value: ingress
+            - name: AGENT_SERVICE_URL
+              value: http://agent-service-http:8081
             - name: CLUSTER_ID
               value: local
             - name: POD_NAMESPACE
@@ -34,25 +54,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: KAFKA_BROKERS
-              value: host.docker.internal:9092
+            - name: HTTP_PORT
+              value: "8080"
+            - name: LEADER_ELECTION_ENABLED
+              value: "false"
             - name: POLICY_FILE
               value: /etc/k8s-agent/policy/policy.yaml
             - name: POLICY_NAMESPACES_FILE
               value: /etc/k8s-agent/policy/namespaces.yaml
-            - name: HTTP_PORT
-              value: "8080"
-            - name: LOGS_TEMP_DIR
-              value: /var/tmp/logs-collect
-            - name: S3_ENDPOINT
-              value: http://host.docker.internal:9000
-            - name: S3_FORCE_PATH_STYLE
-              value: "true"
           volumeMounts:
             - name: policy
               mountPath: /etc/k8s-agent/policy
-            - name: logs-temp
-              mountPath: /var/tmp/logs-collect
           livenessProbe:
             httpGet:
               path: /healthz
@@ -67,15 +79,12 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 50m
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 200m
+              memory: 128Mi
       volumes:
         - name: policy
           configMap:
             name: k8s-agent-policy
-        - name: logs-temp
-          emptyDir:
-            sizeLimit: 2Gi

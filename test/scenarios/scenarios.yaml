@@ -1,0 +1,94 @@
+# E2E scenarios for mock-core (-scenario flag / make test-integration).
+# Prerequisites: make dev-up, agent leader ready, test-data seeded.
+
+scenarios:
+  - id: "01-list-namespaces"
+    name: "List namespaces via k8s.api"
+    command: test/scenarios/01-list-namespaces.json
+    reply_timeout: 60s
+    expect:
+      status: completed
+      http_status: 200
+      body_contains:
+        - test-namespace-1
+        - test-namespace-2
+
+  - id: "02-list-pods"
+    name: "List pods in test-namespace-1 via k8s.api"
+    command: test/scenarios/02-list-pods.json
+    reply_timeout: 60s
+    expect:
+      status: completed
+      http_status: 200
+      body_contains:
+        - logger-a
+        - logger-b
+
+  - id: "03-logs-stream"
+    name: "Tail logger-a container logs online"
+    command: test/scenarios/03-logs-stream-start.json
+    cleanup: test/scenarios/03-logs-stream-stop.json
+    reply_timeout: 60s
+    expect:
+      status: completed
+      fields:
+        output_topic: logs.stream
+        subscription_id: log-stream-logger-a
+    stream:
+      topic: logs.stream
+      timeout: 45s
+      min_messages: 1
+      body_contains:
+        - logger-a
+        - heartbeat
+
+  - id: "04-logs-collect-s3"
+    name: "Collect logs bundle and upload to S3"
+    command: test/scenarios/04-logs-collect.json
+    reply_timeout: 180s
+    expect:
+      status: completed
+      fields:
+        s3_bucket: logs-bundles
+      body_contains:
+        - s3_key
+
+  - id: "05-watch-pods"
+    name: "Watch pod ADDED/DELETED events in namespace"
+    command: test/scenarios/05-watch-subscribe-pods.json
+    cleanup: test/scenarios/05-watch-unsubscribe.json
+    reply_timeout: 60s
+    trigger: kubectl_pod_churn
+    trigger_args:
+      namespace: test-namespace-1
+      pod_name: watch-scenario-probe
+    expect:
+      status: completed
+      fields:
+        output_topic: cluster.events
+        subscription_id: sub-pods-test-namespace-1
+    stream:
+      topic: cluster.events
+      timeout: 90s
+      min_messages: 1
+      body_contains:
+        - ADDED
+
+  - id: "06-health-report"
+    name: "Pod status snapshots for 10 minutes (TTL auto-stop)"
+    command: test/scenarios/06-health-report-start.json
+    cleanup: test/scenarios/06-health-report-stop.json
+    reply_timeout: 60s
+    expect:
+      status: completed
+      fields:
+        output_topic: cluster.health
+        subscription_id: health-sub-scenario
+        interval_seconds: "30"
+    stream:
+      topic: cluster.health
+      timeout: 75s
+      min_messages: 2
+      body_contains:
+        - test-namespace-1
+        - summary

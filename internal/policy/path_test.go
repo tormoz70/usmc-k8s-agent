@@ -28,6 +28,24 @@ func TestParseAPIPathIstio(t *testing.T) {
 	}
 }
 
+func TestParseAPIPathNamespaces(t *testing.T) {
+	req, err := ParseAPIPath("GET", "/api/v1/namespaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Kind != "Namespace" || req.Namespace != "" {
+		t.Fatalf("unexpected list namespaces: %+v", req)
+	}
+
+	req, err = ParseAPIPath("GET", "/api/v1/namespaces/payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Kind != "Namespace" || req.Name != "payments" || req.Namespace != "payments" {
+		t.Fatalf("unexpected get namespace: %+v", req)
+	}
+}
+
 func TestParseAPIPathRoleBindings(t *testing.T) {
 	req, err := ParseAPIPath("GET", "/apis/rbac.authorization.k8s.io/v1/namespaces/default/rolebindings")
 	if err != nil {

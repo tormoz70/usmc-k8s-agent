@@ -1,14 +1,14 @@
 {
   "schema_version": "v1",
-  "command_id": "cmd-test-list-deploy-payments",
+  "command_id": "cmd-scenario-list-pods",
   "type": "k8s.api",
   "issuer": "mock-core",
-  "idempotency_key": "payments/apps/v1/deployments/list",
+  "idempotency_key": "scenario/test-namespace-1/v1/pods/list-app-test",
   "timeout": "30s",
   "issued_at": "2026-07-06T00:00:00Z",
   "http": {
     "method": "GET",
-    "path": "/apis/apps/v1/namespaces/payments/deployments",
+    "path": "/api/v1/namespaces/test-namespace-1/pods?labelSelector=app%3Dtest",
     "headers": {
       "Accept": "application/json"
     }

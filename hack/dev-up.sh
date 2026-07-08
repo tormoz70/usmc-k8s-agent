@@ -52,14 +52,18 @@ echo "[2/4] Waiting for infra..."
 wait_tcp_port localhost 9092
 wait_tcp_port localhost 9000
 wait_http_ok "http://localhost:8090/api/health"
+echo "Ensuring Kafka topics..."
+hack/kafka-init.sh || true
 echo "Infra is ready."
 
 echo
 echo "[3/4] Bootstrapping kind cluster and deploying agent..."
 hack/bootstrap.sh
 
-echo "Waiting for k8s-agent rollout..."
-kubectl rollout status deployment/k8s-agent -n k8s-agent --timeout=120s
+echo "Waiting for uamc-agent rollouts..."
+kubectl rollout status deployment/ingress -n uamc-agent --timeout=120s
+kubectl rollout status deployment/egress -n uamc-agent --timeout=120s
+kubectl rollout status deployment/agent-service -n uamc-agent --timeout=120s
 
 echo
 echo "[4/4] Seeding test cluster data..."
@@ -72,6 +76,6 @@ echo "  Kafka UI:      http://localhost:8088"
 echo "  MinIO Console: http://localhost:9001"
 echo
 echo "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
-echo "  kubectl logs -n default logger-a -f"
+echo "  kubectl logs -n test-namespace-1 logger-a -f"
 echo
 echo "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"

@@ -4,7 +4,7 @@ metadata:
   name: k8s-agent
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "configmaps", "events"]
+    resources: ["pods", "pods/log", "services", "configmaps", "events", "namespaces"]
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]

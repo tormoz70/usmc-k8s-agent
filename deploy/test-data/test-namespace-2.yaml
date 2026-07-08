@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: products
-  namespace: catalog
+  namespace: test-namespace-2
   labels:
     app: products
     app.kubernetes.io/part-of: test-data
@@ -27,7 +27,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: indexer
-  namespace: catalog
+  namespace: test-namespace-2
   labels:
     app: indexer
     app.kubernetes.io/part-of: test-data
@@ -51,7 +51,39 @@ spec:
               i=0
               while true; do
                 i=$((i+1))
-                echo "$(date -u +%H:%M:%S) [catalog/indexer] indexed sku=$i"
+                echo "$(date -u +%H:%M:%S) [test-namespace-2/indexer] indexed sku=$i"
+                sleep 2
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: test-namespace-2
+  labels:
+    app: worker
+    app.kubernetes.io/part-of: test-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+        app.kubernetes.io/part-of: test-data
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              i=0
+              while true; do
+                i=$((i+1))
+                echo "$(date -u +%H:%M:%S) [test-namespace-2/worker] job=$i done"
                 sleep 2
               done
 ---
@@ -59,10 +91,10 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: logger
-  namespace: catalog
+  namespace: test-namespace-2
   labels:
     app: test
-    logger: catalog
+    logger: ns2
     app.kubernetes.io/part-of: test-data
 spec:
   containers:
@@ -72,6 +104,6 @@ spec:
       args:
         - |
           while true; do
-            echo "$(date -u +%H:%M:%S) [catalog/logger] sync complete"
+            echo "$(date -u +%H:%M:%S) [test-namespace-2/logger] sync complete"
             sleep 5
           done

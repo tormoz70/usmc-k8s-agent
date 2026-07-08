@@ -1,0 +1,21 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-test-logs-collect-test-ns-1",
+  "type": "logs.collect",
+  "issuer": "mock-core",
+  "idempotency_key": "logs/test-namespace-1/test/2026-07-06",
+  "timeout": "10m",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "namespace": "test-namespace-1",
+    "label_selector": "app=test",
+    "include_current": true,
+    "include_previous": false,
+    "s3": {
+      "bucket": "logs-bundles",
+      "key": "logs/test-namespace-1/bundle.zip",
+      "access_key_id": "minioadmin",
+      "secret_access_key": "minioadmin"
+    }
+  }
+}

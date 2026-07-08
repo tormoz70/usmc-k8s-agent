@@ -17,20 +17,26 @@ type GVK struct {
 
 // Config is the allow-list loaded from policy files.
 type Config struct {
-	AllowedGVK          []GVK    `yaml:"allowed_gvk"`
-	AllowedVerbs        []string `yaml:"allowed_verbs"`
-	AllowedNamespaces   []string `yaml:"allowed_namespaces"`
-	AllowedCommandTypes []string `yaml:"allowed_command_types"`
-	DenySecrets         bool     `yaml:"deny_secrets"`
+	AllowedGVK                []GVK    `yaml:"allowed_gvk"`
+	AllowedVerbs              []string `yaml:"allowed_verbs"`
+	AllowedNamespaces         []string `yaml:"allowed_namespaces"`
+	AllowedCommandTypes       []string `yaml:"allowed_command_types"`
+	AllowedIssuers            []string `yaml:"allowed_issuers"`
+	AllowedReplyTopics        []string `yaml:"allowed_reply_topics"`
+	AllowedReplyTopicPrefixes []string `yaml:"allowed_reply_topic_prefixes"`
+	DenySecrets               bool     `yaml:"deny_secrets"`
 }
 
 // Engine evaluates requests against the allow-list.
 type Engine struct {
-	cfg Config
-	ns  map[string]struct{}
-	gvk map[gvkKey]struct{}
-	verb map[string]struct{}
-	cmd  map[string]struct{}
+	cfg    Config
+	ns     map[string]struct{}
+	gvk    map[gvkKey]struct{}
+	verb   map[string]struct{}
+	cmd    map[string]struct{}
+	issuer map[string]struct{}
+	reply  map[string]struct{}
+	replyPrefix []string
 }
 
 type gvkKey struct {
@@ -78,11 +84,14 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	e := &Engine{
-		cfg:  cfg,
-		ns:   make(map[string]struct{}, len(cfg.AllowedNamespaces)),
-		gvk:  make(map[gvkKey]struct{}, len(cfg.AllowedGVK)),
-		verb: make(map[string]struct{}, len(cfg.AllowedVerbs)),
-		cmd:  make(map[string]struct{}, len(cfg.AllowedCommandTypes)),
+		cfg:         cfg,
+		ns:          make(map[string]struct{}, len(cfg.AllowedNamespaces)),
+		gvk:         make(map[gvkKey]struct{}, len(cfg.AllowedGVK)),
+		verb:        make(map[string]struct{}, len(cfg.AllowedVerbs)),
+		cmd:         make(map[string]struct{}, len(cfg.AllowedCommandTypes)),
+		issuer:      make(map[string]struct{}, len(cfg.AllowedIssuers)),
+		reply:       make(map[string]struct{}, len(cfg.AllowedReplyTopics)),
+		replyPrefix: append([]string(nil), cfg.AllowedReplyTopicPrefixes...),
 	}
 
 	for _, ns := range cfg.AllowedNamespaces {
@@ -100,6 +109,18 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 	for _, c := range cfg.AllowedCommandTypes {
 		e.cmd[c] = struct{}{}
+	}
+	for _, issuer := range cfg.AllowedIssuers {
+		issuer = strings.TrimSpace(issuer)
+		if issuer != "" {
+			e.issuer[issuer] = struct{}{}
+		}
+	}
+	for _, topic := range cfg.AllowedReplyTopics {
+		topic = strings.TrimSpace(topic)
+		if topic != "" {
+			e.reply[topic] = struct{}{}
+		}
 	}
 	return e, nil
 }
@@ -131,15 +152,48 @@ func (e *Engine) AllowHTTP(method, path string) error {
 			return fmt.Errorf("verb %q is not allowed", req.Verb)
 		}
 	}
-	if req.Kind != "" {
+	if len(e.gvk) > 0 {
+		if req.Kind == "" {
+			return fmt.Errorf("resource kind could not be determined for path %q", path)
+		}
 		key := gvkKey{group: req.Group, version: req.Version, kind: req.Kind}
-		if len(e.gvk) > 0 {
-			if _, ok := e.gvk[key]; !ok {
-				return fmt.Errorf("resource %s/%s/%s is not allowed", req.Group, req.Version, req.Kind)
-			}
+		if _, ok := e.gvk[key]; !ok {
+			return fmt.Errorf("resource %s/%s/%s is not allowed", req.Group, req.Version, req.Kind)
 		}
 	}
 	return nil
+}
+
+// AllowIssuer checks command envelope issuer against allow-list.
+func (e *Engine) AllowIssuer(issuer string) error {
+	if len(e.issuer) == 0 {
+		return nil
+	}
+	issuer = strings.TrimSpace(issuer)
+	if _, ok := e.issuer[issuer]; ok {
+		return nil
+	}
+	return fmt.Errorf("issuer %q is not allowed", issuer)
+}
+
+// AllowReplyTopic checks Kafka reply topic header against allow-list.
+func (e *Engine) AllowReplyTopic(topic string) error {
+	if len(e.reply) == 0 && len(e.replyPrefix) == 0 {
+		return nil
+	}
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return fmt.Errorf("reply_topic is required")
+	}
+	if _, ok := e.reply[topic]; ok {
+		return nil
+	}
+	for _, prefix := range e.replyPrefix {
+		if prefix != "" && strings.HasPrefix(topic, prefix) {
+			return nil
+		}
+	}
+	return fmt.Errorf("reply topic %q is not allowed", topic)
 }
 
 // AllowNamespace checks namespace for typed commands (logs.collect, watch, etc.).
@@ -161,6 +215,9 @@ func (e *Engine) allowNamespace(ns string) error {
 func (e *Engine) AllowGVK(gvk GVK) error {
 	if len(e.gvk) == 0 {
 		return nil
+	}
+	if gvk.Kind == "" {
+		return fmt.Errorf("resource kind is required")
 	}
 	key := gvkKey{group: gvk.Group, version: gvk.Version, kind: gvk.Kind}
 	if _, ok := e.gvk[key]; ok {

@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultLeaseName      = "k8s-agent-leader"
-	defaultLeaseNamespace = "k8s-agent"
+	defaultLeaseNamespace = "uamc-agent"
 	defaultLeaseDuration  = 15 * time.Second
 	defaultRenewDeadline  = 10 * time.Second
 	defaultRetryPeriod    = 2 * time.Second

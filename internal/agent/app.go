@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/usmc/usmc-k8s-agent/internal/cache"
 	"github.com/usmc/usmc-k8s-agent/internal/command"
@@ -21,7 +20,6 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/k8s"
 	"github.com/usmc/usmc-k8s-agent/internal/kafka"
 	"github.com/usmc/usmc-k8s-agent/internal/leaderelection"
-	"github.com/usmc/usmc-k8s-agent/internal/lifecycle"
 	"github.com/usmc/usmc-k8s-agent/internal/logstream"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 	"github.com/usmc/usmc-k8s-agent/internal/policy"
@@ -116,8 +114,14 @@ func New(opts Options) (*App, error) {
 		tempRoot,
 	)
 
-	consumer := kafka.NewConsumer(opts.Config.Kafka, log)
-	publisher := kafka.NewPublisher(opts.Config.Kafka, log)
+	consumer, err := kafka.NewConsumer(opts.Config.Kafka, log)
+	if err != nil {
+		return nil, fmt.Errorf("kafka consumer: %w", err)
+	}
+	publisher, err := kafka.NewPublisher(opts.Config.Kafka, log)
+	if err != nil {
+		return nil, fmt.Errorf("kafka publisher: %w", err)
+	}
 	watchPublisher := watch.NewKafkaPublisher(publisher)
 	watchMgr := watch.NewManager(
 		opts.Config.ClusterID,
@@ -167,9 +171,15 @@ func New(opts Options) (*App, error) {
 		healthhandler.NewStopHandler(healthMgr),
 	)
 
-	processor := kafka.NewProcessor(consumer, publisher, router, opts.Config.Kafka.CommitOnReceive, metrics, log)
+	commandGuard := kafka.NewCommandGuard(engine)
+	processor := kafka.NewProcessor(consumer, publisher, router, commandGuard, opts.Config.Kafka.CommitOnReceive, metrics, log)
 	state := observability.NewRuntimeState()
-	httpServer := httpapi.NewServer(opts.Config.HTTP, state, cacheStore, log)
+
+	var httpRouter *command.Router
+	if opts.Config.Agent.Component == config.ComponentAgentService {
+		httpRouter = router
+	}
+	httpServer := httpapi.NewServer(opts.Config.HTTP, state, cacheStore, log, httpRouter)
 
 	return &App{
 		cfg:          opts.Config,
@@ -187,81 +197,22 @@ func New(opts Options) (*App, error) {
 		publisher:    publisher,
 		processor:    processor,
 		http:         httpServer,
-		podNamespace: envOrDefault("POD_NAMESPACE", "k8s-agent"),
+		podNamespace: envOrDefault("POD_NAMESPACE", "uamc-agent"),
 	}, nil
 }
 
-// Run starts HTTP server and command processing loop.
+// Run starts the configured agent component.
 func (a *App) Run(ctx context.Context, devNoLeader bool) error {
-	if err := a.http.Start(); err != nil {
-		return err
+	switch a.cfg.Agent.Component {
+	case config.ComponentIngress:
+		return a.runIngress(ctx)
+	case config.ComponentEgress:
+		return a.runEgress(ctx, devNoLeader)
+	case config.ComponentAgentService:
+		return a.runAgentService(ctx, devNoLeader)
+	default:
+		return a.runAll(ctx, devNoLeader)
 	}
-	a.state.SetKafkaConnected(true)
-	a.metrics.SyncFromState(a.state)
-
-	if err := a.k8sClient.Ping(ctx); err != nil {
-		a.log.Warn("apiserver ping failed", "error", err)
-	} else {
-		a.state.SetAPIServerOK(true)
-		a.metrics.SyncFromState(a.state)
-	}
-
-	runCommands := func(ctx context.Context) {
-		a.state.SetLeader(true)
-		a.metrics.SyncFromState(a.state)
-		defer func() {
-			a.state.SetLeader(false)
-			a.metrics.SyncFromState(a.state)
-		}()
-		defer a.stopSubscriptions()
-
-		a.patchLeaderLabel(ctx, true)
-		defer a.patchLeaderLabel(context.Background(), false)
-
-		lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
-		if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
-			a.log.Warn("publish agent.lifecycle failed", "error", err)
-		}
-		defer func() {
-			pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID); err != nil {
-				a.log.Warn("publish agent.lifecycle leader lost failed", "error", err)
-			}
-		}()
-
-		a.log.Info("command processor started", "topic", a.cfg.Kafka.RequestTopic)
-		if err := a.processor.Run(ctx); err != nil && ctx.Err() == nil {
-			a.log.Error("command processor stopped", "error", err)
-		}
-	}
-
-	if devNoLeader || !a.cfg.Agent.LeaderElection {
-		go runCommands(ctx)
-		<-ctx.Done()
-		return a.shutdown(context.Background())
-	}
-
-	kube, err := a.k8sClient.Kubernetes()
-	if err != nil {
-		return err
-	}
-
-	err = leaderelection.Run(ctx, kube, leaderelection.Config{
-		Identity: a.cfg.Agent.InstanceID,
-	}, func(ctx context.Context) {
-		a.state.SetLeader(true)
-		a.metrics.SyncFromState(a.state)
-	}, func(context.Context) {
-		a.state.SetLeader(false)
-		a.metrics.SyncFromState(a.state)
-	}, runCommands, a.log)
-
-	shutdownErr := a.shutdown(context.Background())
-	if err != nil {
-		return err
-	}
-	return shutdownErr
 }
 
 func (a *App) stopSubscriptions() {
@@ -298,7 +249,10 @@ func (a *App) shutdown(ctx context.Context) error {
 	a.stopSubscriptions()
 	_ = a.consumer.Close()
 	_ = a.publisher.Close()
-	return a.http.Shutdown(ctx)
+	if a.http != nil {
+		return a.http.Shutdown(ctx)
+	}
+	return nil
 }
 
 // Router exposes the command router for tests.

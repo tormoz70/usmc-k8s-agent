@@ -25,6 +25,7 @@ allowed_verbs:
 
 allowed_gvk:
   - { group: "", version: "v1", kind: "Pod" }
+  - { group: "", version: "v1", kind: "Namespace" }
   - { group: "", version: "v1", kind: "Service" }
   - { group: "", version: "v1", kind: "ConfigMap" }
   - { group: "", version: "v1", kind: "Event" }
@@ -38,5 +39,13 @@ allowed_gvk:
   - { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding }
 
 allowed_namespaces:
-  - default
-  - k8s-agent
+  - uamc-agent
+
+# Kafka trust boundary: validated before command execution.
+allowed_issuers:
+  - core-client
+  - mock-core
+allowed_reply_topics:
+  - core-client.dev.responses
+allowed_reply_topic_prefixes:
+  - core-client.

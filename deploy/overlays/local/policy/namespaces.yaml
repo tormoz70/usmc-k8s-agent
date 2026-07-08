@@ -1,7 +1,5 @@
 # Keep in sync with deploy/test-data/policy/namespaces.yaml
 namespaces:
-  - default
-  - k8s-agent
-  - payments
-  - catalog
-  - demo
+  - uamc-agent
+  - test-namespace-1
+  - test-namespace-2

@@ -60,19 +60,24 @@ func parseCoreResources(req *APIRequest, parts []string) (*APIRequest, error) {
 	}
 
 	if parts[0] == "namespaces" {
-		if len(parts) < 2 {
+		if len(parts) == 1 {
+			req.Kind = "Namespace"
+			return req, nil
+		}
+		if len(parts) == 2 {
+			req.Kind = "Namespace"
+			req.Name = parts[1]
+			req.Namespace = parts[1]
 			return req, nil
 		}
 		req.Namespace = parts[1]
-		if len(parts) >= 3 {
-			subResource := parts[2]
-			req.Kind = resourceToKind(subResource)
-			if subResource == "secrets" {
-				req.IsSecret = true
-			}
-			if len(parts) >= 4 {
-				req.Name = parts[3]
-			}
+		subResource := parts[2]
+		req.Kind = resourceToKind(subResource)
+		if subResource == "secrets" {
+			req.IsSecret = true
+		}
+		if len(parts) >= 4 {
+			req.Name = parts[3]
 		}
 		return req, nil
 	}
@@ -152,6 +157,8 @@ func resourceToKind(resource string) string {
 		return "RoleBinding"
 	case "roles", "role":
 		return "Role"
+	case "namespaces", "namespace":
+		return "Namespace"
 	default:
 		if resource == "" {
 			return ""

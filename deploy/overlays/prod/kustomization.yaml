@@ -4,6 +4,9 @@ kind: Kustomization
 resources:
   - ../../base
 
+generatorOptions:
+  disableNameSuffixHash: true
+
 patches:
   - path: deployment-patch.yaml
 
@@ -11,6 +14,9 @@ secretGenerator:
   - name: k8s-agent-http-token
     literals:
       - token=change-me-in-production
+  - name: k8s-agent-internal-token
+    literals:
+      - token=change-me-internal-in-production
   - name: k8s-agent-kafka-tls
     files:
       - ca.crt=secrets/kafka-ca.crt.placeholder

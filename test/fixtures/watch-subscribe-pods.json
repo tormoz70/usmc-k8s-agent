@@ -3,13 +3,13 @@
   "command_id": "cmd-watch-pods",
   "type": "watch.subscribe",
   "issuer": "mock-core",
-  "idempotency_key": "watch/default/pods/sub-1",
+  "idempotency_key": "watch/test-namespace-1/pods/sub-1",
   "timeout": "24h",
   "issued_at": "2026-07-05T00:00:00Z",
   "payload": {
-    "subscription_id": "sub-pods-default",
+    "subscription_id": "sub-pods-test-namespace-1",
     "gvk": { "group": "", "version": "v1", "kind": "Pod" },
-    "namespace": "default",
+    "namespace": "test-namespace-1",
     "label_selector": "",
     "event_filter": ["ADDED", "MODIFIED", "DELETED", "RESTART"],
     "output_topic": "cluster.events"

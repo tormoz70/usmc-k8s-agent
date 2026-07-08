@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-log-stream-stop-logger-a",
+  "type": "logs.stream.stop",
+  "issuer": "mock-core",
+  "idempotency_key": "logs/stream/stop/logger-a",
+  "timeout": "30s",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "log-stream-logger-a"
+  }
+}

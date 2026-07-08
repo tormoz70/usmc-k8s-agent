@@ -1,7 +1,5 @@
 # Agent allow-list namespaces for local overlay (merged into k8s-agent-policy ConfigMap).
 namespaces:
-  - default
-  - k8s-agent
-  - payments
-  - catalog
-  - demo
+  - uamc-agent
+  - test-namespace-1
+  - test-namespace-2

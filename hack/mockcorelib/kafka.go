@@ -106,6 +106,9 @@ func SendCommand(ctx context.Context, brokers []string, requestTopic, replyTopic
 	if replyTopic == "" {
 		replyTopic = DefaultReplyTopic
 	}
+	if err := EnsureTopics(brokers, TopicSpec{Name: requestTopic, Partitions: 1}, TopicSpec{Name: replyTopic, Partitions: 1}); err != nil {
+		return SendResult{}, fmt.Errorf("ensure topics: %w", err)
+	}
 	corrID := NewCorrelationID()
 
 	w := &kafkago.Writer{
@@ -134,6 +137,7 @@ func SendCommand(ctx context.Context, brokers []string, requestTopic, replyTopic
 
 // NewReader creates a reader with a unique consumer group.
 func NewReader(brokers []string, topic string) *kafkago.Reader {
+	ensureTopicBeforeUse(brokers, topic)
 	return kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers: brokers,
 		Topic:   topic,
@@ -165,7 +169,9 @@ func ListenOnce(brokers []string, replyTopic, corrID string, timeout time.Durati
 			return fmt.Errorf("timeout waiting for reply on %s", replyTopic)
 		default:
 		}
-		msg, err := r.ReadMessage(context.Background())
+		msg, err := readMessageWithTopicRetry(context.Background(), brokers, replyTopic, func(readCtx context.Context) (kafkago.Message, error) {
+			return r.ReadMessage(readCtx)
+		})
 		if err != nil {
 			return err
 		}

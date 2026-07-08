@@ -30,6 +30,7 @@ type StartPayload struct {
 	IncludeNotReadyOnly bool     `json:"include_not_ready_only"`
 	OutputTopic         string   `json:"output_topic"`
 	MaxPodsPerMessage   int      `json:"max_pods_per_message"`
+	TTLSeconds          int      `json:"ttl_seconds"`
 }
 
 type StopPayload struct {
@@ -159,6 +160,9 @@ func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
 		return fmt.Errorf("subscription %q already exists", payload.SubscriptionID)
 	}
 	subCtx, cancel := context.WithCancel(parent)
+	if payload.TTLSeconds > 0 {
+		subCtx, cancel = context.WithTimeout(subCtx, time.Duration(payload.TTLSeconds)*time.Second)
+	}
 	sub := &subscription{payload: payload, cancel: cancel}
 	m.subs[payload.SubscriptionID] = sub
 	m.mu.Unlock()

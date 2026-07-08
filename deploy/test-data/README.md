@@ -21,12 +21,10 @@ kubectl apply -k deploy/overlays/local
 | Файл | Содержимое |
 | --- | --- |
 | `kustomization.yaml` | Kustomize entrypoint |
-| `namespaces.yaml` | Namespace `payments`, `catalog`, `demo` |
-| `default.yaml` | Deployment `web`, `api`; Pod `logger-a`, `logger-b` |
-| `payments.yaml` | Deployment `billing-api`; Pod `logger` |
-| `catalog.yaml` | Deployment `products`, `indexer`; Pod `logger` |
-| `demo.yaml` | Deployment `worker`; Pod `logger` |
-| `uamcsa-rolebindings.yaml` | RoleBinding `uamcsa-agent` → SA `uamcsa` (ns `k8s-agent`) |
+| `namespaces.yaml` | Namespace `test-namespace-1`, `test-namespace-2` |
+| `test-namespace-1.yaml` | Deployment `web`, `api`, `billing-api`; Pod `logger-a`, `logger-b` |
+| `test-namespace-2.yaml` | Deployment `products`, `indexer`, `worker`; Pod `logger` |
+| `uamcsa-rolebindings.yaml` | RoleBinding `uamcsa-agent` в `test-namespace-1`, `test-namespace-2` |
 | `policy/namespaces.yaml` | Allow-list namespace'ов для local overlay |
 
 > **Синхронизация:** `deploy/overlays/local/policy/namespaces.yaml` должен совпадать с `policy/namespaces.yaml` (kustomize overlay не может ссылаться на файлы вне своей директории).

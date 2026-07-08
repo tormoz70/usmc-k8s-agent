@@ -2,7 +2,7 @@ MODULE ?= github.com/usmc/usmc-k8s-agent
 BIN  ?= bin/agent
 IMAGE ?= k8s-agent:dev
 
-.PHONY: all build test lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full seed-test-data clean
+.PHONY: all build test test-integration lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full seed-test-data clean
 
 all: build
 
@@ -17,6 +17,9 @@ mock-core-ui:
 
 test:
 	go test ./...
+
+test-integration:
+	RUN_INTEGRATION=1 go test -tags=integration ./hack/mockcorelib/... -timeout 20m -v
 
 tidy:
 	go mod tidy
@@ -63,7 +66,7 @@ deploy-prod:
 
 ifeq ($(OS),Windows_NT)
 chaos-leader:
-	powershell -NoProfile -Command "& { $$ErrorActionPreference='Stop'; $$leader = kubectl get pods -n k8s-agent -l 'app=k8s-agent,k8s-agent/leader=true' -o jsonpath='{.items[0].metadata.name}'; Write-Host \"Deleting leader $$leader\"; kubectl delete pod -n k8s-agent $$leader }"
+	powershell -NoProfile -Command "& { $$ErrorActionPreference='Stop'; $$leader = kubectl get pods -n uamc-agent -l 'app.kubernetes.io/component=agent-service,k8s-agent/leader=true' -o jsonpath='{.items[0].metadata.name}'; Write-Host \"Deleting leader $$leader\"; kubectl delete pod -n uamc-agent $$leader }"
 else
 chaos-leader:
 	bash hack/chaos-leader-failover.sh

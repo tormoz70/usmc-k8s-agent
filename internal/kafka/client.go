@@ -2,12 +2,9 @@ package kafka
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -28,9 +25,16 @@ type Publisher struct {
 	log    *slog.Logger
 }
 
-func NewPublisher(cfg config.KafkaConfig, log *slog.Logger) *Publisher {
+func NewPublisher(cfg config.KafkaConfig, log *slog.Logger) (*Publisher, error) {
+	if err := ValidateSecurityConfig(cfg); err != nil {
+		return nil, fmt.Errorf("kafka publisher: %w", err)
+	}
 	if log == nil {
 		log = slog.Default()
+	}
+	transport, err := newTransport(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return &Publisher{
 		writer: &kafkago.Writer{
@@ -38,10 +42,10 @@ func NewPublisher(cfg config.KafkaConfig, log *slog.Logger) *Publisher {
 			Balancer:     &kafkago.LeastBytes{},
 			RequiredAcks: kafkago.RequireAll,
 			Compression:  kafkago.Zstd,
-			Transport:    transport(cfg.TLS),
+			Transport:    transport,
 		},
 		log: log,
-	}
+	}, nil
 }
 
 func (p *Publisher) PublishResponse(ctx context.Context, replyTopic, correlationID string, resp *result.Response) error {
@@ -93,9 +97,16 @@ type Consumer struct {
 	log    *slog.Logger
 }
 
-func NewConsumer(cfg config.KafkaConfig, log *slog.Logger) *Consumer {
+func NewConsumer(cfg config.KafkaConfig, log *slog.Logger) (*Consumer, error) {
+	if err := ValidateSecurityConfig(cfg); err != nil {
+		return nil, fmt.Errorf("kafka consumer: %w", err)
+	}
 	if log == nil {
 		log = slog.Default()
+	}
+	d, err := newDialer(cfg)
+	if err != nil {
+		return nil, err
 	}
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        cfg.Brokers,
@@ -104,9 +115,14 @@ func NewConsumer(cfg config.KafkaConfig, log *slog.Logger) *Consumer {
 		MinBytes:       1,
 		MaxBytes:       10 << 20,
 		CommitInterval: 0,
-		Dialer:         dialer(cfg.TLS),
+		Dialer:         d,
 	})
-	return &Consumer{reader: r, cfg: cfg, log: log}
+	if cfg.ClientPrincipal != "" {
+		log.Info("kafka consumer configured", "security_mode", ResolveSecurityMode(cfg), "client_principal", cfg.ClientPrincipal)
+	} else if mode := ResolveSecurityMode(cfg); mode == SecurityMTLS {
+		log.Info("kafka consumer configured", "security_mode", mode, "note", "set KAFKA_TLS_CLIENT_PRINCIPAL to match Kafka ACL principal (usually certificate CN)")
+	}
+	return &Consumer{reader: r, cfg: cfg, log: log}, nil
 }
 
 // FetchMessage reads the next Kafka message.
@@ -114,7 +130,7 @@ func (c *Consumer) FetchMessage(ctx context.Context) (kafkago.Message, error) {
 	return c.reader.FetchMessage(ctx)
 }
 
-// CommitMessage commits offset (at-most-once: commit before processing when configured).
+// CommitMessage commits offset after successful processing.
 func (c *Consumer) CommitMessage(ctx context.Context, msg kafkago.Message) error {
 	return c.reader.CommitMessages(ctx, msg)
 }
@@ -150,37 +166,28 @@ func headerValue(headers []kafkago.Header, key string) string {
 	return ""
 }
 
-func dialer(tlsCfg config.TLSConfig) *kafkago.Dialer {
+func newDialer(cfg config.KafkaConfig) (*kafkago.Dialer, error) {
 	d := &kafkago.Dialer{Timeout: 10 * time.Second, DualStack: true}
-	if tlsCfg.Enabled {
-		d.TLS = buildTLS(tlsCfg)
+	mode := ResolveSecurityMode(cfg)
+	if mode == SecurityPlaintext {
+		return d, nil
 	}
-	return d
+	tlsConfig, err := BuildTLSConfig(mode, cfg.TLS)
+	if err != nil {
+		return nil, err
+	}
+	d.TLS = tlsConfig
+	return d, nil
 }
 
-func transport(tlsCfg config.TLSConfig) *kafkago.Transport {
-	t := &kafkago.Transport{}
-	if tlsCfg.Enabled {
-		t.TLS = buildTLS(tlsCfg)
+func newTransport(cfg config.KafkaConfig) (*kafkago.Transport, error) {
+	mode := ResolveSecurityMode(cfg)
+	if mode == SecurityPlaintext {
+		return &kafkago.Transport{}, nil
 	}
-	return t
-}
-
-func buildTLS(cfg config.TLSConfig) *tls.Config {
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if cfg.CAFile != "" {
-		caPEM, err := os.ReadFile(cfg.CAFile)
-		if err == nil {
-			pool := x509.NewCertPool()
-			pool.AppendCertsFromPEM(caPEM)
-			tlsConfig.RootCAs = pool
-		}
+	tlsConfig, err := BuildTLSConfig(mode, cfg.TLS)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-	}
-	return tlsConfig
+	return &kafkago.Transport{TLS: tlsConfig}, nil
 }

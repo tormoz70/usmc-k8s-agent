@@ -1,19 +1,19 @@
 {
   "schema_version": "v1",
-  "command_id": "cmd-test-logs-collect-payments",
+  "command_id": "cmd-scenario-logs-collect",
   "type": "logs.collect",
   "issuer": "mock-core",
-  "idempotency_key": "logs/payments/test/2026-07-06",
+  "idempotency_key": "scenario/logs/test-namespace-1/scenario-bundle",
   "timeout": "10m",
   "issued_at": "2026-07-06T00:00:00Z",
   "payload": {
-    "namespace": "payments",
+    "namespace": "test-namespace-1",
     "label_selector": "app=test",
     "include_current": true,
     "include_previous": false,
     "s3": {
       "bucket": "logs-bundles",
-      "key": "logs/payments/bundle.zip",
+      "key": "logs/scenario/test-namespace-1/bundle.zip",
       "access_key_id": "minioadmin",
       "secret_access_key": "minioadmin"
     }

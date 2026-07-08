@@ -3,8 +3,6 @@ kind: Kustomization
 
 resources:
   - namespaces.yaml
-  - default.yaml
-  - payments.yaml
-  - catalog.yaml
-  - demo.yaml
+  - test-namespace-1.yaml
+  - test-namespace-2.yaml
   - uamcsa-rolebindings.yaml

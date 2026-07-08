@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/usmc/usmc-k8s-agent/internal/cache"
+	"github.com/usmc/usmc-k8s-agent/internal/command"
 	"github.com/usmc/usmc-k8s-agent/internal/config"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 )
@@ -25,7 +26,7 @@ type Server struct {
 	srv   *http.Server
 }
 
-func NewServer(cfg config.HTTPConfig, state *observability.RuntimeState, cacheStore *cache.Store, log *slog.Logger) *Server {
+func NewServer(cfg config.HTTPConfig, state *observability.RuntimeState, cacheStore *cache.Store, log *slog.Logger, router *command.Router) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -36,6 +37,9 @@ func NewServer(cfg config.HTTPConfig, state *observability.RuntimeState, cacheSt
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/v1/cache/", s.handleCacheGet)
 	mux.HandleFunc("/v1/cache", s.handleCacheList)
+	if router != nil {
+		MountInternalRoutes(mux, router, state, cfg.InternalBearerToken)
+	}
 
 	s.srv = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

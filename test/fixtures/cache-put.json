@@ -9,7 +9,7 @@
   "payload": {
     "entries": [
       {
-        "key": "feature/payments/new-checkout",
+        "key": "feature/test-namespace-1/new-checkout",
         "value": "enabled",
         "ttl_seconds": 3600
       }

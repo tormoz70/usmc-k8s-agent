@@ -3,11 +3,11 @@
   "command_id": "cmd-test-logs-collect",
   "type": "logs.collect",
   "issuer": "mock-core",
-  "idempotency_key": "logs/default/test/2026-07-05",
+  "idempotency_key": "logs/test-namespace-1/test/2026-07-05",
   "timeout": "10m",
   "issued_at": "2026-07-05T00:00:00Z",
   "payload": {
-    "namespace": "default",
+    "namespace": "test-namespace-1",
     "label_selector": "app=test",
     "include_current": true,
     "include_previous": false,

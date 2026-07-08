@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-scenario-watch-unsub",
+  "type": "watch.unsubscribe",
+  "issuer": "mock-core",
+  "idempotency_key": "scenario/watch/unsub/sub-pods-test-namespace-1",
+  "timeout": "30s",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "sub-pods-test-namespace-1"
+  }
+}

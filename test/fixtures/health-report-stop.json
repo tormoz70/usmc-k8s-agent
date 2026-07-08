@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-health-stop",
+  "type": "health.report.stop",
+  "issuer": "mock-core",
+  "idempotency_key": "health/stop/health-sub-001",
+  "timeout": "30s",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "health-sub-001"
+  }
+}

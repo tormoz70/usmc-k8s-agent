@@ -25,8 +25,11 @@
 │                        ◄── reply_topic (header)             │
 │                                                             │
 │  kind cluster `k8s-agent`                                   │
-│    ├── Deployment k8s-agent (2 replicas, leader election)   │
-│    ├── test pods (default namespace)                        │
+│    namespace `uamc-agent`:                                  │
+│      ├── ingress (входящий HTTP → agent-service)            │
+│      ├── egress (Kafka ↔ agent-service)                     │
+│      └── agent-service (K8s API, cache, команды)            │
+│    namespaces `test-namespace-1`, `test-namespace-2`        │
 │    └── kube-apiserver                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -38,6 +41,8 @@
 | Kubernetes | kind | Docker |
 | Java core-client | **mock-core UI** (`:8090`) или CLI `hack/mock-core` | compose / хост |
 | mTLS Kafka | не используется локально | — |
+
+Подробная диаграмма протоколов и транспортов: [`service-interaction-diagram.md`](./service-interaction-diagram.md).
 
 ---
 
@@ -212,9 +217,10 @@ kubectl apply -k deploy/overlays/local
 ### 3.1 Проверка после деплоя
 
 ```bash
-kubectl get pods -n k8s-agent
-kubectl get lease -n k8s-agent          # leader election
-kubectl logs -n k8s-agent -l app=k8s-agent --tail=20
+kubectl get pods -n uamc-agent
+kubectl get lease -n uamc-agent          # leader election
+kubectl get pods -n uamc-agent -l app.kubernetes.io/part-of=uamc-agent
+kubectl logs -n uamc-agent -l app.kubernetes.io/component=agent-service --tail=20
 ```
 
 Ожидаемо:
@@ -224,22 +230,22 @@ kubectl logs -n k8s-agent -l app=k8s-agent --tail=20
 - в logs нет постоянных ошибок подключения к Kafka
 
 ```bash
-kubectl get pods -n k8s-agent -l k8s-agent/leader=true
-kubectl get configmap k8s-agent-policy -n k8s-agent -o yaml | grep cache.put   # Linux/macOS only
+kubectl get pods -n uamc-agent -l app.kubernetes.io/component=agent-service,k8s-agent/leader=true
+kubectl get configmap k8s-agent-policy -n uamc-agent -o yaml | grep cache.put   # Linux/macOS only
 ```
 
 PowerShell (Windows — **`grep` не работает**, используйте `Select-String`):
 
 ```powershell
-kubectl get pods -n k8s-agent
-kubectl get pods -n k8s-agent -l k8s-agent/leader=true
-kubectl get configmap k8s-agent-policy -n k8s-agent -o yaml | Select-String "cache.put"
+kubectl get pods -n uamc-agent
+kubectl get pods -n uamc-agent -l app.kubernetes.io/component=agent-service,k8s-agent/leader=true
+kubectl get configmap k8s-agent-policy -n uamc-agent -o yaml | Select-String "cache.put"
 ```
 
 ### 3.2 HTTP агента с хоста
 
 ```bash
-kubectl port-forward -n k8s-agent svc/k8s-agent-http 8080:8080
+kubectl port-forward -n uamc-agent svc/k8s-agent-http 8080:8080
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
 curl http://localhost:8080/metrics
@@ -257,14 +263,15 @@ Service `k8s-agent-http` маршрутизирует трафик **тольк�
 
 | Namespace | Deployment'ы | Pod'ы с логами в stdout |
 | --- | --- | --- |
-| **default** | `web` (nginx×2), `api` (busybox, пишет лог) | `logger-a`, `logger-b` (`app=test`) |
-| **payments** | `billing-api` (busybox×2, пишет лог) | `logger` (`app=test`) |
-| **catalog** | `products` (nginx×2), `indexer` (busybox, пишет лог) | `logger` (`app=test`) |
-| **demo** | `worker` (busybox, пишет лог) | `logger` (`app=test`) |
+| **test-namespace-1** | `web` (nginx×2), `api` (busybox, пишет лог), `billing-api` (busybox×2) | `logger-a`, `logger-b` (`app=test`) |
+| **test-namespace-2** | `products` (nginx×2), `indexer` (busybox, пишет лог), `worker` (busybox) | `logger` (`app=test`) |
 
-Namespace'ы `payments`, `catalog`, `demo` добавлены в allow-list policy локального overlay ([`deploy/test-data/policy/namespaces.yaml`](../deploy/test-data/policy/namespaces.yaml)).
+Namespace'ы `test-namespace-1` и `test-namespace-2` добавлены в allow-list policy локального overlay ([`deploy/test-data/policy/namespaces.yaml`](../deploy/test-data/policy/namespaces.yaml)).
 
-Агент работает от ServiceAccount **`uamcsa`** (namespace `k8s-agent`). В каждом тестовом namespace создан **RoleBinding** `uamcsa-agent` → ClusterRole `k8s-agent` ([`deploy/test-data/uamcsa-rolebindings.yaml`](../deploy/test-data/uamcsa-rolebindings.yaml)).
+Агент развёрнут в namespace **`uamc-agent`** и работает от ServiceAccount **`uamcsa`**. Права выдаются **только через namespace-scoped RoleBinding** (ClusterRoleBinding не используется):
+
+- `uamcsa-agent` в `uamc-agent` — leader election, операции в namespace агента ([`deploy/base/uamcsa-rolebinding.yaml`](../deploy/base/uamcsa-rolebinding.yaml))
+- `uamcsa-agent` в каждом прикладном namespace — [`deploy/test-data/uamcsa-rolebindings.yaml`](../deploy/test-data/uamcsa-rolebindings.yaml)
 
 ### 4.2 Применить / обновить данные
 
@@ -280,21 +287,21 @@ kubectl apply -k deploy/test-data
 
 ```powershell
 kubectl get pods -A -l app.kubernetes.io/part-of=test-data
-kubectl logs -n default logger-a -f
-kubectl logs -n payments deploy/billing-api -f
-kubectl logs -n catalog deploy/indexer -f
-kubectl logs -n demo deploy/worker -f
+kubectl logs -n test-namespace-1 logger-a -f
+kubectl logs -n test-namespace-1 deploy/billing-api -f
+kubectl logs -n test-namespace-2 deploy/indexer -f
+kubectl logs -n test-namespace-2 deploy/worker -f
 ```
 
 Pod'ы с label `app=test` используются шаблоном `logs-collect` в mock-core UI.
 
 ### 4.4 Ручное создание (legacy)
 
-Если нужен только минимальный набор в `default`:
+Если нужен только минимальный набор в `test-namespace-1`:
 
 ```powershell
-kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
-kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n default
+kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n test-namespace-1
+kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n test-namespace-1
 ```
 
 ---
@@ -316,15 +323,17 @@ make dev-up
 **Проверьте, что агент готов** (в отдельном терминале):
 
 ```powershell
-kubectl get pods -n k8s-agent
-kubectl get pods -n k8s-agent -l k8s-agent/leader=true
-kubectl rollout status deployment/k8s-agent -n k8s-agent
+kubectl get pods -n uamc-agent
+kubectl get pods -n uamc-agent -l app.kubernetes.io/component=agent-service,k8s-agent/leader=true
+kubectl rollout status deployment/ingress -n uamc-agent
+kubectl rollout status deployment/egress -n uamc-agent
+kubectl rollout status deployment/agent-service -n uamc-agent
 ```
 
 Ожидаемо:
 
-- 2 pod'а `k8s-agent-*` в статусе **Running** и **Ready** (1/1)
-- ровно один pod с label `k8s-agent/leader=true`
+- 2 pod'а каждого компонента (`ingress`, `egress`, `agent-service`) в статусе **Running** и **Ready**
+- ровно один pod `agent-service` с label `k8s-agent/leader=true`
 - `docker compose ps` — сервисы `redpanda`, `minio`, `mock-core-ui` в **running**
 
 Откройте в браузере: **http://localhost:8090**
@@ -361,28 +370,28 @@ Responses: сообщение с тем же correlation_id
 
 | # | Шаблон | Что проверяет | Ожидание в Responses |
 | --- | --- | --- | --- |
-| 1 | `k8s-api-list-services` | Kafka + apiserver, list в `default` | `"status": "completed"`, JSON `items` |
-| 2 | `k8s-api-list-pods` | list pod'ов с `app=test` | `test-nginx`, `test-busybox` в теле |
-| 3 | `k8s-api-list-deployments` | list Deployment'ов | JSON `items` из `default` |
+| 1 | `k8s-api-list-services` | Kafka + apiserver, list в `test-namespace-1` | `"status": "completed"`, JSON `items` |
+| 2 | `k8s-api-list-pods` | list pod'ов с `app=test` | `logger-a`, `logger-b` в теле |
+| 3 | `k8s-api-list-deployments` | list Deployment'ов | JSON `items` из `test-namespace-1` |
 | 4 | `cache-put` → `cache-delete` | cache write + delete | оба `"status": "completed"` |
-| 5 | `k8s-api-list-rolebindings-all` | RBAC: все RoleBinding в кластере | `uamcsa-agent` в `default`, `payments`, … |
+| 5 | `k8s-api-list-rolebindings-test-namespace-1` | RBAC: RoleBinding в namespace | `uamcsa-agent` в `test-namespace-1` |
 
 Шаблоны 1–3 — тип `k8s.api`, достаточно **Send command** без дополнительных настроек.
 
-> **Почему не `/api/v1/namespaces`:** у ServiceAccount агента нет cluster-scoped права `list namespaces` (см. `deploy/base/clusterrole.yaml`). Запросы только к ресурсам в allow-list namespace'ах (`default`, `k8s-agent`).
+> **Почему не `/api/v1/namespaces`:** у ServiceAccount агента нет cluster-scoped права `list namespaces` (см. `deploy/base/clusterrole.yaml`). Запросы только к ресурсам в allow-list namespace'ах (`uamc-agent`, `test-namespace-1`, `test-namespace-2`).
 
 ### 5.4 Базовый smoke-test: k8s.api
 
 Проверяет, что агент читает Kafka и ходит в kube-apiserver.
 
 1. Вкладка **Commands**
-2. **Template** → `k8s-api-list-services (k8s.api)` — самый быстрый первый запрос (list Service в `default`)
+2. **Template** → `k8s-api-list-services (k8s.api)` — самый быстрый первый запрос (list Service в `test-namespace-1`)
 3. **Reply topic** — оставьте `core-client.dev.responses`
 4. Нажмите **Send command**
 5. Вкладка **Responses** — через несколько секунд появится сообщение с вашим `correlation_id`
 6. В теле ответа: `"status": "completed"`, в `body` — JSON от apiserver
 
-Для проверки test pod'ов выберите `k8s-api-list-pods` — в ответе должны быть `test-nginx` и `test-busybox`.
+Для проверки test pod'ов выберите `k8s-api-list-pods` — в ответе должны быть `logger-a` и `logger-b`.
 
 Если ответа нет более 1–2 минут — см. [§13 Troubleshooting](#13-troubleshooting).
 
@@ -408,8 +417,8 @@ Responses: сообщение с тем же correlation_id
 6. В другом терминале создайте или удалите pod:
 
 ```powershell
-kubectl run demo-pod --image=nginx:1.27 --labels=app=test -n default
-kubectl delete pod demo-pod -n default
+kubectl run demo-pod --image=nginx:1.27 --labels=app=test -n test-namespace-1
+kubectl delete pod demo-pod -n test-namespace-1
 ```
 
 7. В **Responses** на topic `cluster.events` появятся события ADDED/DELETED
@@ -421,13 +430,13 @@ kubectl delete pod demo-pod -n default
 3. В **отдельном терминале** — port-forward на HTTP API leader pod:
 
 ```powershell
-kubectl port-forward -n k8s-agent svc/k8s-agent-http 8080:8080
+kubectl port-forward -n uamc-agent svc/k8s-agent-http 8080:8080
 ```
 
 4. Проверка кэша:
 
 ```powershell
-curl http://localhost:8080/v1/cache/feature/payments/new-checkout
+curl http://localhost:8080/v1/cache/feature/test-namespace-1/new-checkout
 ```
 
 Ожидаемо: `"value": "enabled"`.
@@ -450,7 +459,7 @@ curl http://localhost:8080/v1/cache/feature/payments/new-checkout
 | Сбор логов → S3 | `logs-collect` | reply topic (авто) | **S3 Check** |
 | Watch pod'ов | `watch-subscribe-pods` | `cluster.events` | создать/удалить pod |
 | Cache write / delete | `cache-put`, `cache-delete` | reply topic (авто) | port-forward :8080 |
-| RBAC RoleBindings | `k8s-api-list-rolebindings-all` | reply topic (авто) | ищите `uamcsa-agent` |
+| RBAC RoleBindings | `k8s-api-list-rolebindings-test-namespace-1` | reply topic (авто) | ищите `uamcsa-agent` |
 | Health snapshots | `health-report-start` | `cluster.health` | подождать ~60 с |
 
 ### 5.10 Запуск UI без Docker (опционально)
@@ -538,7 +547,7 @@ bin/mock-core -file test/fixtures/cache-put.json
 Проверка HTTP (после `port-forward` на `k8s-agent-http`):
 
 ```bash
-curl http://localhost:8080/v1/cache/feature/payments/new-checkout
+curl http://localhost:8080/v1/cache/feature/test-namespace-1/new-checkout
 ```
 
 ### 7.2.3 watch.subscribe
@@ -555,7 +564,7 @@ bin/mock-core -listen -topic cluster.events
 bin/mock-core -file test/fixtures/watch-subscribe-pods.json
 ```
 
-Создайте/удалите pod в `default` — в терминале 1 появятся события в `cluster.events`.
+Создайте/удалите pod в `test-namespace-1` — в терминале 1 появятся события в `cluster.events`.
 
 ### 7.2.4 logs.collect → MinIO
 
@@ -579,9 +588,37 @@ bin/mock-core -listen -topic cluster.health
 bin/mock-core -file test/fixtures/health-report-start.json
 ```
 
-Каждые 60s в `cluster.health` приходит snapshot pod'ов.
+Каждые 30s в `cluster.health` приходит snapshot pod'ов (TTL 600s — автоостановка через 10 мин).
 
-### 7.2.6 agent.lifecycle (failover)
+### 7.2.6 logs.stream — онлайн-логи контейнера
+
+Терминал 1:
+
+```bash
+bin/mock-core -listen -topic logs.stream
+```
+
+Терминал 2:
+
+```bash
+bin/mock-core -file test/fixtures/logs-stream-start-logger-a.json
+```
+
+Ожидаемо: строки `heartbeat` от pod `logger-a` в `logs.stream`. Остановка:
+
+```bash
+bin/mock-core -file test/fixtures/logs-stream-stop-logger-a.json
+```
+
+### 7.2.7 k8s.api — list namespaces
+
+```bash
+bin/mock-core -file test/fixtures/k8s-api-list-namespaces.json
+```
+
+Ожидаемо: `test-namespace-1`, `test-namespace-2` в `http_body`.
+
+### 7.2.8 agent.lifecycle (failover)
 
 Терминал 1:
 
@@ -597,11 +634,59 @@ bash hack/chaos-leader-failover.sh
 
 Ожидаемо: событие `agent.started` / `agent.leader.changed` при смене leader.
 
-### 7.2.7 Слушать только reply topic
+### 7.2.9 Слушать только reply topic
 
 ```bash
 bin/mock-core -listen -reply-topic core-client.dev.responses
 ```
+
+### 7.3 E2E-сценарии (автотесты mock-core)
+
+Шесть сценариев покрывают основные Kafka-команды. Реестр: `test/scenarios/scenarios.yaml`.
+
+| ID | Что проверяет | Команда / топик ответа |
+|----|---------------|------------------------|
+| `01-list-namespaces` | Список namespace | `k8s.api` → reply |
+| `02-list-pods` | Pod'ы в `test-namespace-1` | `k8s.api` → reply |
+| `03-logs-stream` | Онлайн-логи `logger-a` | `logs.stream.start` → `logs.stream` |
+| `04-logs-collect-s3` | Архив логов в MinIO | `logs.collect` → reply + S3 |
+| `05-watch-pods` | ADDED при создании pod | `watch.subscribe` → `cluster.events` |
+| `06-health-report` | Статусы pod'ов 10 мин (TTL) | `health.report.start` → `cluster.health` |
+
+**Один сценарий:**
+
+```bash
+make mock-core
+bin/mock-core -scenario 02-list-pods
+```
+
+**Все сценарии:**
+
+```bash
+bin/mock-core -scenario all
+```
+
+**Go integration tests** (после `make dev-up`):
+
+```bash
+make test-integration
+# или один сценарий:
+RUN_INTEGRATION=1 SCENARIO_ID=03-logs-stream go test -tags=integration ./hack/mockcorelib/... -run TestIntegrationScenarioByID -v
+```
+
+PowerShell:
+
+```powershell
+$env:RUN_INTEGRATION="1"
+go test -tags=integration ./hack/mockcorelib/... -timeout 20m -v
+```
+
+**Что ещё стоит проверить вручную** (нет в автосuite, но реализовано):
+
+- `cache.put` / `cache.delete` + `GET /v1/cache/{key}` через ingress
+- `watch.unsubscribe`, `health.report.stop`, `logs.stream.stop` (cleanup в сценариях 03/05/06)
+- `k8s.api` list deployments/services (`test/fixtures/k8s-api-list-*.json`)
+- Failover leader: `make chaos-leader` + `bin/mock-core -listen -topic agent.lifecycle`
 
 ---
 
@@ -666,8 +751,10 @@ http://localhost:8088 — просмотр топиков, сообщений, c
 ```bash
 docker build -t k8s-agent:dev .
 kind load docker-image k8s-agent:dev --name k8s-agent
-kubectl rollout restart deployment/k8s-agent -n k8s-agent
-kubectl rollout status deployment/k8s-agent -n k8s-agent
+kubectl rollout restart deployment/ingress deployment/egress deployment/agent-service -n uamc-agent
+kubectl rollout status deployment/ingress -n uamc-agent
+kubectl rollout status deployment/egress -n uamc-agent
+kubectl rollout status deployment/agent-service -n uamc-agent
 ```
 
 ---
@@ -741,22 +828,22 @@ docker logs k8s-agent-control-plane 2>&1 | Select-Object -Last 50
 ### Leader pod не найден (`No resources found`)
 
 ```powershell
-kubectl get pods -n k8s-agent -o wide
-kubectl get lease -n k8s-agent
-kubectl logs -n k8s-agent -l app=k8s-agent --tail=30
+kubectl get pods -n uamc-agent -o wide
+kubectl get lease -n uamc-agent
+kubectl logs -n uamc-agent -l app.kubernetes.io/component=agent-service --tail=30
 ```
 
 | Симптом | Что проверить |
 | --- | --- |
-| Pod'ы не `Running` | `kubectl describe pod -n k8s-agent -l app=k8s-agent` |
+| Pod'ы не `Running` | `kubectl describe pod -n uamc-agent -l app.kubernetes.io/part-of=uamc-agent` |
 | Нет Lease / holder | Kafka недоступен → `docker compose ps`, логи агента |
-| Pod Running, но нет label `k8s-agent/leader=true` | После обновления RBAC: `kubectl apply -k deploy/overlays/local` и `kubectl rollout restart deployment/k8s-agent -n k8s-agent` |
+| Pod Running, но нет label `k8s-agent/leader=true` | После обновления RBAC: `kubectl apply -k deploy/overlays/local` и `kubectl rollout restart deployment/ingress deployment/egress deployment/agent-service -n uamc-agent` |
 | Label есть, selector не находит | Убедитесь в точном синтаксисе: `-l k8s-agent/leader=true` |
 
 Проверка label на всех pod'ах:
 
 ```powershell
-kubectl get pods -n k8s-agent --show-labels
+kubectl get pods -n uamc-agent --show-labels
 ```
 
 Leader может работать через Lease **без** label, пока patch RBAC не применён; HTTP Service `k8s-agent-http` (cache API) **требует** label на leader.
@@ -764,14 +851,43 @@ Leader может работать через Lease **без** label, пока p
 ### Pod'ы агента не Ready
 
 ```bash
-kubectl describe pod -n k8s-agent -l app=k8s-agent
-kubectl logs -n k8s-agent -l app=k8s-agent --tail=50
+kubectl describe pod -n uamc-agent -l app.kubernetes.io/component=agent-service
+kubectl logs -n uamc-agent -l app.kubernetes.io/component=agent-service --tail=50
 ```
 
 Частые причины:
 
 - Redpanda/MinIO не запущены (`docker compose ps`)
 - `host.docker.internal` недоступен из kind (на Linux иногда нужен `extra_hosts` в kind config)
+
+### Unknown Topic Or Partition
+
+Redpanda не создаёт топики при **чтении** (consumer). Ошибка `[3] Unknown Topic Or Partition` — топик ещё не существует.
+
+**Быстрое исправление:**
+
+```bash
+hack/kafka-init.sh
+# Windows:
+powershell -File hack/kafka-init.ps1
+```
+
+Создаются топики:
+
+- `k8s.commands.request`
+- `core-client.dev.responses`
+- `cluster.events`
+- `logs.stream`
+- `cluster.health`
+- `agent.lifecycle`
+
+Проверка:
+
+```bash
+docker compose exec redpanda rpk topic list
+```
+
+`mock-core` и `mock-core-ui` также пытаются создать топики автоматически при отправке/подписке (пересоберите: `make mock-core`).
 
 ### mock-core: timeout waiting for reply
 
@@ -792,7 +908,7 @@ Overlay `deploy/overlays/local` монтирует полный файл `deploy
 
 ```bash
 kubectl apply -k deploy/overlays/local
-kubectl rollout restart deployment/k8s-agent -n k8s-agent
+kubectl rollout restart deployment/ingress deployment/egress deployment/agent-service -n uamc-agent
 ```
 
 ### Windows
@@ -863,12 +979,12 @@ make kind-up
 # или: powershell -File hack\bootstrap.ps1
 
 # 3. Проверка агента
-kubectl get pods -n k8s-agent
-kubectl get pods -n k8s-agent -l k8s-agent/leader=true
+kubectl get pods -n uamc-agent
+kubectl get pods -n uamc-agent -l app.kubernetes.io/component=agent-service,k8s-agent/leader=true
 
 # 4. Test pods
-kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n default
-kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n default
+kubectl run test-nginx --image=nginx:1.27 --labels=app=test -n test-namespace-1
+kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh -c "while true; do echo hello; sleep 5; done" -n test-namespace-1
 
 # 5. Smoke через UI
 # Откройте http://localhost:8090 → шаблон k8s-api-list-deployments → Send command

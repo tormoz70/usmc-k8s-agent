@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-scenario-health-stop",
+  "type": "health.report.stop",
+  "issuer": "mock-core",
+  "idempotency_key": "scenario/health/stop/health-sub-scenario",
+  "timeout": "30s",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "health-sub-scenario"
+  }
+}

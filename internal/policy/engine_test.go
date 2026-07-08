@@ -53,6 +53,71 @@ func TestEngineDenyNamespace(t *testing.T) {
 	}
 }
 
+func TestEngineAllowNamespaceList(t *testing.T) {
+	engine, err := NewEngine(Config{
+		AllowedCommandTypes: []string{"k8s.api"},
+		AllowedGVK: []GVK{
+			{Group: "", Version: "v1", Kind: "Namespace"},
+		},
+		AllowedNamespaces: []string{"app"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowHTTP("GET", "/api/v1/namespaces"); err != nil {
+		t.Fatalf("expected namespace list allow, got %v", err)
+	}
+}
+
+func TestEngineDenyUndeterminedKind(t *testing.T) {
+	engine, err := NewEngine(Config{
+		AllowedCommandTypes: []string{"k8s.api"},
+		AllowedGVK: []GVK{
+			{Group: "", Version: "v1", Kind: "Pod"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowHTTP("GET", "/api/v1"); err == nil {
+		t.Fatal("expected denial when kind cannot be determined")
+	}
+}
+
+func TestEngineAllowIssuer(t *testing.T) {
+	engine, err := NewEngine(Config{
+		AllowedIssuers: []string{"core-client", "mock-core"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowIssuer("mock-core"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowIssuer("attacker"); err == nil {
+		t.Fatal("expected issuer denial")
+	}
+}
+
+func TestEngineAllowReplyTopic(t *testing.T) {
+	engine, err := NewEngine(Config{
+		AllowedReplyTopics:        []string{"core-client.dev.responses"},
+		AllowedReplyTopicPrefixes: []string{"core-client."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowReplyTopic("core-client.dev.responses"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowReplyTopic("core-client.prod.responses"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AllowReplyTopic("evil.responses"); err == nil {
+		t.Fatal("expected reply topic denial")
+	}
+}
+
 func TestEngineAllowGVK(t *testing.T) {
 	engine, err := NewEngine(Config{
 		AllowedGVK: []GVK{{Group: "apps", Version: "v1", Kind: "Deployment"}},
@@ -65,6 +130,9 @@ func TestEngineAllowGVK(t *testing.T) {
 	}
 	if err := engine.AllowGVK(GVK{Group: "", Version: "v1", Kind: "Secret"}); err == nil {
 		t.Fatal("expected denial")
+	}
+	if err := engine.AllowGVK(GVK{Group: "", Version: "v1", Kind: ""}); err == nil {
+		t.Fatal("expected denial for empty kind")
 	}
 }
 
