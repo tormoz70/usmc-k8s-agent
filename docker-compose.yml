@@ -59,9 +59,14 @@
       S3_SECRET_KEY: minioadmin
       S3_FORCE_PATH_STYLE: "true"
       FIXTURES_DIR: /fixtures
+      FEATURES_DIR: /policy
+      KUBECONFIG: /kube/config
+      AGENT_NAMESPACE: uamc-agent
       MINIO_CONSOLE_URL: http://localhost:9001
     volumes:
       - ./test/fixtures:/fixtures:ro
+      - ./deploy/base/policy:/policy:ro
+      - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
     depends_on:
       - redpanda
       - minio

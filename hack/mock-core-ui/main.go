@@ -17,18 +17,23 @@ import (
 var staticFS embed.FS
 
 type config struct {
-	Addr          string
-	Brokers       []string
-	RequestTopic  string
-	ReplyTopic    string
-	FixturesDir   string
-	S3Endpoint    string
-	S3Region      string
-	S3AccessKey   string
-	S3SecretKey   string
-	S3PathStyle   bool
-	MinIOConsole  string
-	DefaultTopics []string
+	Addr             string
+	Brokers          []string
+	RequestTopic     string
+	ReplyTopic       string
+	FixturesDir      string
+	FeaturesDir      string
+	Kubeconfig       string
+	AgentNamespace   string
+	AgentConfigMap   string
+	AgentDeployments []string
+	S3Endpoint       string
+	S3Region         string
+	S3AccessKey      string
+	S3SecretKey      string
+	S3PathStyle      bool
+	MinIOConsole     string
+	DefaultTopics    []string
 }
 
 func main() {
@@ -37,6 +42,10 @@ func main() {
 	requestTopic := flag.String("request-topic", env("KAFKA_REQUEST_TOPIC", mockcorelib.DefaultRequestTopic), "request topic")
 	replyTopic := flag.String("reply-topic", env("KAFKA_REPLY_TOPIC", mockcorelib.DefaultReplyTopic), "default reply topic")
 	fixturesDir := flag.String("fixtures", env("FIXTURES_DIR", "test/fixtures"), "command template directory")
+	featuresDir := flag.String("features-dir", env("FEATURES_DIR", "deploy/base/policy"), "agent feature preset directory")
+	kubeconfig := flag.String("kubeconfig", env("KUBECONFIG", ""), "kubeconfig for agent mode switching")
+	agentNamespace := flag.String("agent-namespace", env("AGENT_NAMESPACE", "uamc-agent"), "agent namespace")
+	agentConfigMap := flag.String("agent-configmap", env("AGENT_CONFIGMAP", "k8s-agent-policy"), "policy configmap name")
 	s3Endpoint := flag.String("s3-endpoint", env("S3_ENDPOINT", "http://localhost:9000"), "S3 endpoint")
 	s3Region := flag.String("s3-region", env("S3_REGION", "us-east-1"), "S3 region")
 	s3AccessKey := flag.String("s3-access-key", env("S3_ACCESS_KEY", "minioadmin"), "S3 access key")
@@ -45,12 +54,17 @@ func main() {
 	flag.Parse()
 
 	cfg := config{
-		Addr:         *addr,
-		Brokers:      mockcorelib.SplitBrokers(*brokers),
-		RequestTopic: *requestTopic,
-		ReplyTopic:   *replyTopic,
-		FixturesDir:  *fixturesDir,
-		S3Endpoint:   *s3Endpoint,
+		Addr:           *addr,
+		Brokers:        mockcorelib.SplitBrokers(*brokers),
+		RequestTopic:   *requestTopic,
+		ReplyTopic:     *replyTopic,
+		FixturesDir:    *fixturesDir,
+		FeaturesDir:    *featuresDir,
+		Kubeconfig:     *kubeconfig,
+		AgentNamespace: *agentNamespace,
+		AgentConfigMap: *agentConfigMap,
+		AgentDeployments: []string{"agent-service", "egress"},
+		S3Endpoint:     *s3Endpoint,
 		S3Region:     *s3Region,
 		S3AccessKey:  *s3AccessKey,
 		S3SecretKey:  *s3SecretKey,
@@ -74,6 +88,8 @@ func main() {
 	mux.HandleFunc("/api/commands", srv.handleCommands)
 	mux.HandleFunc("/api/messages/stream", srv.handleMessageStream)
 	mux.HandleFunc("/api/s3/head", srv.handleS3Head)
+	mux.HandleFunc("/api/agent/modes", srv.handleAgentModes)
+	mux.HandleFunc("/api/agent/mode", srv.handleAgentMode)
 	mux.HandleFunc("/api/health", srv.handleHealth)
 
 	slog.Info("mock-core-ui listening", "addr", cfg.Addr, "brokers", cfg.Brokers, "fixtures", cfg.FixturesDir)

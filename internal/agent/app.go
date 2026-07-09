@@ -9,6 +9,7 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/cache"
 	"github.com/usmc/usmc-k8s-agent/internal/command"
 	"github.com/usmc/usmc-k8s-agent/internal/config"
+	"github.com/usmc/usmc-k8s-agent/internal/features"
 	apihandler "github.com/usmc/usmc-k8s-agent/internal/handlers/api"
 	cachehandler "github.com/usmc/usmc-k8s-agent/internal/handlers/cache"
 	healthhandler "github.com/usmc/usmc-k8s-agent/internal/handlers/health"
@@ -87,11 +88,19 @@ func New(opts Options) (*App, error) {
 	}
 
 	engine := opts.Policy
+	var featReg *features.Registry
 	if engine == nil {
-		engine, err = policy.LoadFromFiles(opts.Config.Policy.PolicyFile, opts.Config.Policy.NamespacesFile)
+		var err error
+		engine, featReg, err = policy.LoadFromFilesWithFeatures(
+			opts.Config.Policy.PolicyFile,
+			opts.Config.Policy.NamespacesFile,
+			opts.Config.Policy.FeaturesFile,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("policy: %w", err)
 		}
+	} else {
+		featReg = nil // tests: all handlers enabled when policy injected externally
 	}
 
 	kube, err := k8sClient.Kubernetes()
@@ -157,19 +166,41 @@ func New(opts Options) (*App, error) {
 	logsHandler := loghandler.NewHandler(collector, engine, publisher, opts.Config.Agent.LogsCollectMaxJobs, log)
 	logsHandler.SetMetrics(metrics)
 
-	router := command.NewRouter(
-		apihandler.NewHandler(k8sClient, engine, k8s.DefaultTrimOptions()),
-		logsHandler,
-		watchhandler.NewSubscribeHandler(watchMgr),
-		watchhandler.NewUnsubscribeHandler(watchMgr),
-		cachehandler.NewPutHandler(cacheStore, engine, metrics),
-		cachehandler.NewDeleteHandler(cacheStore, engine, metrics),
-		cachehandler.NewClearHandler(cacheStore, engine, metrics),
-		logstreamhandler.NewStartHandler(streamMgr, opts.Config.Kafka.LogsStreamTopic),
-		logstreamhandler.NewStopHandler(streamMgr),
-		healthhandler.NewStartHandler(healthMgr, opts.Config.Kafka.HealthTopic),
-		healthhandler.NewStopHandler(healthMgr),
-	)
+	var handlers []command.Handler
+	if featReg.CommandEnabled(command.TypeK8sAPI) {
+		handlers = append(handlers, apihandler.NewHandler(k8sClient, engine, k8s.DefaultTrimOptions()))
+	}
+	if featReg.CommandEnabled(command.TypeLogsCollect) {
+		handlers = append(handlers, logsHandler)
+	}
+	if featReg.CommandEnabled(command.TypeWatchSubscribe) {
+		handlers = append(handlers, watchhandler.NewSubscribeHandler(watchMgr, opts.Config.Kafka.EventsTopic))
+	}
+	if featReg.CommandEnabled(command.TypeWatchUnsubscribe) {
+		handlers = append(handlers, watchhandler.NewUnsubscribeHandler(watchMgr))
+	}
+	if featReg.CommandEnabled(command.TypeCachePut) {
+		handlers = append(handlers, cachehandler.NewPutHandler(cacheStore, engine, metrics))
+	}
+	if featReg.CommandEnabled(command.TypeCacheDelete) {
+		handlers = append(handlers, cachehandler.NewDeleteHandler(cacheStore, engine, metrics))
+	}
+	if featReg.CommandEnabled(command.TypeCacheClear) {
+		handlers = append(handlers, cachehandler.NewClearHandler(cacheStore, engine, metrics))
+	}
+	if featReg.CommandEnabled(command.TypeLogsStreamStart) {
+		handlers = append(handlers, logstreamhandler.NewStartHandler(streamMgr, opts.Config.Kafka.LogsStreamTopic))
+	}
+	if featReg.CommandEnabled(command.TypeLogsStreamStop) {
+		handlers = append(handlers, logstreamhandler.NewStopHandler(streamMgr))
+	}
+	if featReg.CommandEnabled(command.TypeHealthReportStart) {
+		handlers = append(handlers, healthhandler.NewStartHandler(healthMgr, opts.Config.Kafka.HealthTopic))
+	}
+	if featReg.CommandEnabled(command.TypeHealthReportStop) {
+		handlers = append(handlers, healthhandler.NewStopHandler(healthMgr))
+	}
+	router := command.NewRouter(handlers...)
 
 	commandGuard := kafka.NewCommandGuard(engine)
 	processor := kafka.NewProcessor(consumer, publisher, router, commandGuard, opts.Config.Kafka.CommitOnReceive, metrics, log)

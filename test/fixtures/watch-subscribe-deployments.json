@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-watch-deployments",
+  "type": "watch.subscribe",
+  "issuer": "mock-core",
+  "idempotency_key": "watch/test-namespace-1/deployments/sub-1",
+  "timeout": "24h",
+  "issued_at": "2026-07-05T00:00:00Z",
+  "payload": {
+    "subscription_id": "sub-deployments-test-namespace-1",
+    "gvk": { "group": "apps", "version": "v1", "kind": "Deployment" },
+    "namespace": "test-namespace-1",
+    "label_selector": "",
+    "event_filter": ["ADDED", "MODIFIED", "DELETED"],
+    "output_topic": "cluster.events"
+  }
+}

@@ -89,6 +89,7 @@ type HTTPConfig struct {
 type PolicyConfig struct {
 	NamespacesFile string
 	PolicyFile     string
+	FeaturesFile   string
 }
 
 // Load reads configuration from environment with sensible defaults.
@@ -183,6 +184,7 @@ func Load() (*Config, error) {
 		Policy: PolicyConfig{
 			NamespacesFile: env("POLICY_NAMESPACES_FILE", "/etc/k8s-agent/policy/namespaces.yaml"),
 			PolicyFile:     env("POLICY_FILE", "/etc/k8s-agent/policy/policy.yaml"),
+			FeaturesFile:   env("FEATURES_FILE", "/etc/k8s-agent/policy/features.yaml"),
 		},
 	}
 

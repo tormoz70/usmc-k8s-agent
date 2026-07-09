@@ -1,0 +1,16 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-scenario-watch-namespaces",
+  "type": "watch.subscribe",
+  "issuer": "mock-core",
+  "idempotency_key": "scenario/watch/cluster/namespaces",
+  "timeout": "24h",
+  "issued_at": "2026-07-06T00:00:00Z",
+  "payload": {
+    "subscription_id": "sub-cluster-namespaces",
+    "gvk": { "group": "", "version": "v1", "kind": "Namespace" },
+    "event_filter": ["ADDED", "DELETED"],
+    "output_topic": "cluster.events",
+    "ttl_seconds": 3600
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-watch-deployments-unsub",
+  "type": "watch.unsubscribe",
+  "issuer": "mock-core",
+  "idempotency_key": "watch/test-namespace-1/deployments/unsub",
+  "timeout": "1m",
+  "issued_at": "2026-07-05T00:00:00Z",
+  "payload": {
+    "subscription_id": "sub-deployments-test-namespace-1"
+  }
+}

@@ -63,8 +63,8 @@ func ParseSubscribePayload(raw json.RawMessage) (*SubscribePayload, error) {
 	if p.GVK.Kind == "" || p.GVK.Version == "" {
 		return nil, fmt.Errorf("gvk.kind and gvk.version are required")
 	}
-	if p.Namespace == "" {
-		return nil, fmt.Errorf("namespace is required")
+	if !ClusterScopedKind(p.GVK.Kind) && strings.TrimSpace(p.Namespace) == "" {
+		return nil, fmt.Errorf("namespace is required for %q watch", p.GVK.Kind)
 	}
 	if len(p.EventFilter) == 0 {
 		p.EventFilter = []string{EventAdded, EventModified, EventDeleted}

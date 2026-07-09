@@ -147,6 +147,46 @@
     }
     .s3-result a { color: var(--accent); }
     .empty { color: var(--muted); font-size: 0.875rem; padding: 2rem 0; text-align: center; }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .feature-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+    }
+    .feature-card.disabled { opacity: 0.55; }
+    .feature-card h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    .feature-card p {
+      margin: 0;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .chip {
+      display: inline-block;
+      font-size: 0.6875rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      margin-top: 0.35rem;
+    }
+    .chip.on { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+    .chip.off { background: rgba(139, 156, 179, 0.15); color: var(--muted); }
+    .mode-banner {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .mode-banner.warn { border-color: var(--warn); }
   </style>
 </head>
 <body>
@@ -158,6 +198,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="commands">Commands</button>
     <button class="tab" data-tab="responses">Responses</button>
+    <button class="tab" data-tab="agent-mode">Agent Mode</button>
     <button class="tab" data-tab="s3">S3 Check</button>
   </nav>
 
@@ -202,6 +243,32 @@
       </div>
     </section>
 
+    <section id="panel-agent-mode" class="panel">
+      <div id="mode-banner" class="mode-banner">
+        <strong>Current mode:</strong> <span id="current-mode-name">—</span>
+        <p id="mode-k8s-hint" style="margin:0.5rem 0 0;color:var(--muted);font-size:0.875rem;"></p>
+      </div>
+      <div class="row">
+        <div>
+          <label for="agent-mode-select">Switch mode</label>
+          <select id="agent-mode-select"></select>
+        </div>
+        <div>
+          <label for="agent-mode-desc">Description</label>
+          <input id="agent-mode-desc" type="text" readonly>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="apply-mode-btn">Apply mode</button>
+        <button class="secondary" id="refresh-mode-btn">Refresh status</button>
+        <span class="status" id="mode-status"></span>
+      </div>
+      <label>Feature groups (RBAC roles)</label>
+      <div class="feature-grid" id="feature-grid">
+        <div class="empty">Loading…</div>
+      </div>
+    </section>
+
     <section id="panel-s3" class="panel">
       <div class="row">
         <div>
@@ -230,6 +297,9 @@
         panels.forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+        if (tab.dataset.tab === 'agent-mode') {
+          loadAgentModes().catch(err => console.error(err));
+        }
       });
     });
 
@@ -415,6 +485,108 @@
     });
 
     loadConfig().catch(err => console.error(err));
+
+    let agentModes = [];
+
+    async function loadAgentModes() {
+      const [modesRes, statusRes] = await Promise.all([
+        fetch('/api/agent/modes'),
+        fetch('/api/agent/mode'),
+      ]);
+      const modesData = await modesRes.json();
+      const statusData = await statusRes.json();
+      agentModes = modesData.modes || [];
+
+      const select = document.getElementById('agent-mode-select');
+      select.innerHTML = '';
+      agentModes.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name;
+        select.appendChild(opt);
+      });
+      if (statusData.current_mode && statusData.current_mode !== 'custom') {
+        select.value = statusData.current_mode;
+      }
+      updateModeDescription();
+
+      document.getElementById('current-mode-name').textContent =
+        statusData.current_mode_name || statusData.current_mode || '—';
+
+      const hint = document.getElementById('mode-k8s-hint');
+      const banner = document.getElementById('mode-banner');
+      if (!statusData.k8s_available) {
+        hint.textContent = statusData.k8s_error || 'KUBECONFIG not available — view presets only, apply disabled.';
+        banner.classList.add('warn');
+        document.getElementById('apply-mode-btn').disabled = true;
+      } else {
+        hint.textContent = 'Apply updates ConfigMap k8s-agent-policy and restarts agent-service + egress.';
+        banner.classList.remove('warn');
+        document.getElementById('apply-mode-btn').disabled = false;
+      }
+
+      renderFeatureGrid(statusData.features || []);
+    }
+
+    function updateModeDescription() {
+      const id = document.getElementById('agent-mode-select').value;
+      const mode = agentModes.find(m => m.id === id);
+      document.getElementById('agent-mode-desc').value = mode ? mode.description : '';
+    }
+
+    function renderFeatureGrid(features) {
+      const grid = document.getElementById('feature-grid');
+      if (!features.length) {
+        grid.innerHTML = '<div class="empty">No feature data</div>';
+        return;
+      }
+      grid.innerHTML = '';
+      features.forEach(f => {
+        const card = document.createElement('div');
+        card.className = 'feature-card' + (f.enabled ? '' : ' disabled');
+        const watch = f.watch_gvk && f.watch_gvk.length
+          ? `<p><strong>Watch:</strong> ${f.watch_gvk.join(', ')}</p>` : '';
+        card.innerHTML = `
+          <h3>${f.id}</h3>
+          <span class="chip ${f.enabled ? 'on' : 'off'}">${f.enabled ? 'enabled' : 'disabled'}</span>
+          <p>${f.description || ''}</p>
+          ${f.rbac_role ? `<p><strong>RBAC:</strong> ${f.rbac_role}</p>` : ''}
+          ${watch}`;
+        grid.appendChild(card);
+      });
+    }
+
+    document.getElementById('agent-mode-select').addEventListener('change', updateModeDescription);
+
+    document.getElementById('refresh-mode-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('mode-status');
+      setStatus(statusEl, 'Refreshing…', 'waiting');
+      try {
+        await loadAgentModes();
+        setStatus(statusEl, 'Updated', 'ok');
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    });
+
+    document.getElementById('apply-mode-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('mode-status');
+      const mode = document.getElementById('agent-mode-select').value;
+      setStatus(statusEl, 'Applying… (rollout ~1–2 min)', 'waiting');
+      try {
+        const res = await fetch('/api/agent/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setStatus(statusEl, `Applied ${data.mode}, restarted: ${(data.restarted || []).join(', ')}`, 'ok');
+        await loadAgentModes();
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    });
   </script>
 </body>
 </html>

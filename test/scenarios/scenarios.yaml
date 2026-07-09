@@ -92,3 +92,25 @@ scenarios:
       body_contains:
         - test-namespace-1
         - summary
+
+  - id: "07-watch-namespaces"
+    name: "Control cluster namespaces — notify on new Namespace"
+    command: test/scenarios/07-watch-namespaces.json
+    cleanup: test/scenarios/07-watch-unsubscribe.json
+    reply_timeout: 60s
+    trigger: kubectl_namespace_create
+    trigger_args:
+      namespace: watch-scenario-new-ns
+    expect:
+      status: completed
+      fields:
+        output_topic: cluster.events
+        subscription_id: sub-cluster-namespaces
+    stream:
+      topic: cluster.events
+      timeout: 90s
+      min_messages: 1
+      body_contains:
+        - ADDED
+        - watch-scenario-new-ns
+        - Namespace

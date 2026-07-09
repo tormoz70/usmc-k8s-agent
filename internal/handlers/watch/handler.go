@@ -11,11 +11,12 @@ import (
 
 // SubscribeHandler handles watch.subscribe commands.
 type SubscribeHandler struct {
-	manager *watch.Manager
+	manager      *watch.Manager
+	defaultTopic string
 }
 
-func NewSubscribeHandler(manager *watch.Manager) *SubscribeHandler {
-	return &SubscribeHandler{manager: manager}
+func NewSubscribeHandler(manager *watch.Manager, defaultTopic string) *SubscribeHandler {
+	return &SubscribeHandler{manager: manager, defaultTopic: defaultTopic}
 }
 
 func (h *SubscribeHandler) Type() string {
@@ -31,7 +32,10 @@ func (h *SubscribeHandler) Handle(ctx context.Context, cmd *command.Command, met
 	if err := h.manager.Subscribe(ctx, payload); err != nil {
 		return result.Failed(cmd.CommandID, meta.CorrelationID, "SubscribeFailed", "WATCH_SUBSCRIBE_ERROR", err.Error(), started, time.Now().UTC()), nil
 	}
-	resp := result.Completed(cmd.CommandID, meta.CorrelationID, started, time.Now().UTC())
+	finished := time.Now().UTC()
+	resp := result.Completed(cmd.CommandID, meta.CorrelationID, started, finished)
+	resp.SubscriptionID = payload.SubscriptionID
+	resp.OutputTopic = payload.OutputTopicOr(h.defaultTopic)
 	return resp, nil
 }
 

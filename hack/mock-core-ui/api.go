@@ -16,11 +16,15 @@ import (
 )
 
 type server struct {
-	cfg config
+	cfg   config
+	modes *agentModeController
 }
 
 func newServer(cfg config) *server {
-	return &server{cfg: cfg}
+	return &server{
+		cfg:   cfg,
+		modes: newAgentModeController(cfg),
+	}
 }
 
 func (s *server) staticHandler() http.Handler {
@@ -208,6 +212,50 @@ func (s *server) handleS3Head(w http.ResponseWriter, r *http.Request) {
 	}
 	info.ConsoleURL = fmt.Sprintf("%s/browser/%s/%s", s.cfg.MinIOConsole, bucket, key)
 	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *server) handleAgentModes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"modes": s.modes.listPresets(),
+	})
+}
+
+func (s *server) handleAgentMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		st, err := s.modes.status(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	case http.MethodPost:
+		var req applyAgentModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+			return
+		}
+		if strings.TrimSpace(req.Mode) == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("mode is required"))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		result, err := s.modes.applyMode(ctx, req.Mode)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

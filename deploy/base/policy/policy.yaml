@@ -1,5 +1,7 @@
 deny_secrets: true
 
+# Command types and allowed_gvk are driven by features.yaml when FEATURES_FILE is mounted.
+# Values below are fallback when features file is absent.
 allowed_command_types:
   - k8s.api
   - logs.collect

@@ -71,14 +71,17 @@ func (m *Manager) Subscribe(ctx context.Context, payload *SubscribePayload) erro
 	if err := m.policy.AllowCommandType(command.TypeWatchSubscribe); err != nil {
 		return err
 	}
-	if err := m.policy.AllowNamespace(payload.Namespace); err != nil {
-		return err
-	}
 	if err := m.policy.AllowGVK(payload.GVK); err != nil {
 		return err
 	}
+	if !ClusterScopedKind(payload.GVK.Kind) {
+		if err := m.policy.AllowNamespace(payload.Namespace); err != nil {
+			return err
+		}
+	}
 
 	gvk := k8s.GVKFromParts(payload.GVK.Group, payload.GVK.Version, payload.GVK.Kind)
+	informerNS := InformerNamespace(payload.GVK.Kind, payload.Namespace)
 	gvr, err := m.bundle.GVRForGVK(gvk)
 	if err != nil {
 		return fmt.Errorf("resolve gvr: %w", err)
@@ -86,7 +89,7 @@ func (m *Manager) Subscribe(ctx context.Context, payload *SubscribePayload) erro
 
 	key := informerKey{
 		group: gvk.Group, version: gvk.Version, kind: gvk.Kind,
-		namespace: payload.Namespace, labelSelector: payload.LabelSelector, fieldSelector: payload.FieldSelector,
+		namespace: informerNS, labelSelector: payload.LabelSelector, fieldSelector: payload.FieldSelector,
 	}
 
 	m.mu.Lock()
@@ -134,7 +137,7 @@ func (m *Manager) Subscribe(ctx context.Context, payload *SubscribePayload) erro
 	inf.AddEventHandler(handler)
 
 	m.subs[payload.SubscriptionID] = &subscription{payload: payload, cancel: cancel}
-	m.log.Info("watch subscribed", "subscription_id", payload.SubscriptionID, "kind", gvk.Kind, "namespace", payload.Namespace)
+	m.log.Info("watch subscribed", "subscription_id", payload.SubscriptionID, "kind", gvk.Kind, "namespace", informerNS)
 	return nil
 }
 
@@ -184,7 +187,7 @@ func (m *Manager) getOrCreateInformer(ctx context.Context, key informerKey, gvr 
 	}
 
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
-		m.bundle.Dynamic, 10*time.Minute, payload.Namespace, tweak,
+		m.bundle.Dynamic, 10*time.Minute, key.namespace, tweak,
 	)
 	inf := factory.ForResource(gvr).Informer()
 	m.informers[key] = inf
@@ -228,6 +231,14 @@ func (m *Manager) handleObject(ctx context.Context, payload *SubscribePayload, g
 	if effectiveType == EventK8sEvent {
 		details["message"] = nestedString(u.Object, "message")
 		details["reason"] = nestedString(u.Object, "reason")
+	}
+	if gvk.Kind == "Namespace" {
+		if labels := u.GetLabels(); len(labels) > 0 {
+			details["labels"] = labels
+		}
+		if phase, ok, _ := unstructured.NestedString(u.Object, "status", "phase"); ok && phase != "" {
+			details["phase"] = phase
+		}
 	}
 
 	ev := &ClusterEvent{

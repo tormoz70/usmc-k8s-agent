@@ -14,8 +14,8 @@ func TestLoadScenarios(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Scenarios) != 6 {
-		t.Fatalf("expected 6 scenarios, got %d", len(catalog.Scenarios))
+	if len(catalog.Scenarios) != 7 {
+		t.Fatalf("expected 7 scenarios, got %d", len(catalog.Scenarios))
 	}
 	sc, err := catalog.FindScenario("02-list-pods")
 	if err != nil {

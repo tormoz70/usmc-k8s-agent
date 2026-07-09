@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/usmc/usmc-k8s-agent/internal/features"
 )
 
 // GVK identifies a Kubernetes or CRD resource type.
@@ -71,6 +73,56 @@ func LoadFromFiles(policyFile, namespacesFile string) (*Engine, error) {
 		}
 	}
 	return NewEngine(cfg)
+}
+
+// LoadFromFilesWithFeatures loads policy, optional namespaces list, and optional features toggles.
+// When featuresFile is set and readable, enabled groups override allowed_command_types and allowed_gvk.
+func LoadFromFilesWithFeatures(policyFile, namespacesFile, featuresFile string) (*Engine, *features.Registry, error) {
+	data, err := os.ReadFile(policyFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read policy file: %w", err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("parse policy file: %w", err)
+	}
+	if namespacesFile != "" {
+		nsData, err := os.ReadFile(namespacesFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read namespaces file: %w", err)
+		}
+		var nsList struct {
+			Namespaces []string `yaml:"namespaces"`
+		}
+		if err := yaml.Unmarshal(nsData, &nsList); err != nil {
+			return nil, nil, fmt.Errorf("parse namespaces file: %w", err)
+		}
+		if len(nsList.Namespaces) > 0 {
+			cfg.AllowedNamespaces = nsList.Namespaces
+		}
+	}
+	featCfg, err := features.Load(featuresFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	featRes, err := features.Apply(featCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if featCfg != nil {
+		cfg.AllowedCommandTypes = featRes.CommandTypes
+		if len(featRes.AllowedGVK) > 0 {
+			cfg.AllowedGVK = make([]GVK, len(featRes.AllowedGVK))
+			for i, g := range featRes.AllowedGVK {
+				cfg.AllowedGVK[i] = GVK{Group: g.Group, Version: g.Version, Kind: g.Kind}
+			}
+		}
+	}
+	engine, err := NewEngine(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return engine, featRes.Registry, nil
 }
 
 // NewEngine builds an Engine from Config with defaults applied.

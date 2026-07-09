@@ -58,6 +58,8 @@ spec:
               value: /etc/k8s-agent/policy/policy.yaml
             - name: POLICY_NAMESPACES_FILE
               value: /etc/k8s-agent/policy/namespaces.yaml
+            - name: FEATURES_FILE
+              value: /etc/k8s-agent/policy/features.yaml
             - name: LOGS_TEMP_DIR
               value: /var/tmp/logs-collect
             - name: S3_ENDPOINT

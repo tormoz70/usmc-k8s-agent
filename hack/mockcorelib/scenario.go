@@ -313,9 +313,33 @@ func runTrigger(ctx context.Context, s *Scenario) error {
 	switch s.Trigger {
 	case "kubectl_pod_churn":
 		return kubectlPodChurn(ctx, s.TriggerArgs.Namespace, s.TriggerArgs.PodName)
+	case "kubectl_namespace_create":
+		return kubectlNamespaceCreate(ctx, s.TriggerArgs.Namespace)
 	default:
 		return fmt.Errorf("unknown trigger %q", s.Trigger)
 	}
+}
+
+func kubectlNamespaceCreate(ctx context.Context, namespace string) error {
+	if namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return fmt.Errorf("kubectl not found in PATH")
+	}
+	_ = exec.CommandContext(ctx, "kubectl", "delete", "namespace", namespace, "--ignore-not-found", "--wait=false").Run()
+	time.Sleep(2 * time.Second)
+	cmd := exec.CommandContext(ctx, "kubectl", "create", "namespace", namespace)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl create namespace: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	time.Sleep(2 * time.Second)
+	go func() {
+		time.Sleep(3 * time.Minute)
+		_ = exec.Command("kubectl", "delete", "namespace", namespace, "--ignore-not-found", "--wait=false").Run()
+	}()
+	return nil
 }
 
 func kubectlPodChurn(ctx context.Context, namespace, podName string) error {
