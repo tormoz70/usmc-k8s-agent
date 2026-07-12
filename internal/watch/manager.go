@@ -67,7 +67,7 @@ func NewManager(clusterID, defaultTopic string, bundle *k8s.DynamicBundle, engin
 }
 
 // Subscribe registers a watch subscription (leader-only).
-func (m *Manager) Subscribe(ctx context.Context, payload *SubscribePayload) error {
+func (m *Manager) Subscribe(_ context.Context, payload *SubscribePayload) error {
 	if err := m.policy.AllowCommandType(command.TypeWatchSubscribe); err != nil {
 		return err
 	}
@@ -95,14 +95,15 @@ func (m *Manager) Subscribe(ctx context.Context, payload *SubscribePayload) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.subs[payload.SubscriptionID]; exists {
-		return fmt.Errorf("subscription %q already exists", payload.SubscriptionID)
+	if existing, exists := m.subs[payload.SubscriptionID]; exists {
+		// Idempotent re-subscribe (core may replay after reconnect).
+		existing.cancel()
+		delete(m.subs, payload.SubscriptionID)
+		m.log.Info("watch replacing existing subscription", "subscription_id", payload.SubscriptionID)
 	}
 
-	subCtx, cancel := context.WithCancel(ctx)
-	if payload.TTLSeconds > 0 {
-		subCtx, cancel = context.WithTimeout(subCtx, time.Duration(payload.TTLSeconds)*time.Second)
-	}
+	// Do not derive from the command request context — it is cancelled when the reply is sent.
+	subCtx, cancel := subscriptionContext(payload.TTLSeconds)
 
 	inf, err := m.getOrCreateInformer(subCtx, key, gvr, payload)
 	if err != nil {
@@ -368,6 +369,13 @@ func nestedString(obj map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func subscriptionContext(ttlSeconds int) (context.Context, context.CancelFunc) {
+	if ttlSeconds > 0 {
+		return context.WithTimeout(context.Background(), time.Duration(ttlSeconds)*time.Second)
+	}
+	return context.WithCancel(context.Background())
 }
 
 // Ensure watch.Event types are referenced for future use.

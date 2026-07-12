@@ -138,7 +138,7 @@ func (p *StartPayload) OutputTopicOr(defaultTopic string) string {
 	return defaultTopic
 }
 
-func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
+func (m *Manager) Start(_ context.Context, payload *StartPayload) error {
 	if err := m.policy.AllowCommandType(command.TypeLogsStreamStart); err != nil {
 		return err
 	}
@@ -157,10 +157,8 @@ func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
 		return fmt.Errorf("pod %q already has an active stream subscription %q", podKey, existing)
 	}
 
-	subCtx, cancel := context.WithCancel(parent)
-	if payload.TTLSeconds > 0 {
-		subCtx, cancel = context.WithTimeout(subCtx, time.Duration(payload.TTLSeconds)*time.Second)
-	}
+	// Do not derive from the command request context — it is cancelled when the reply is sent.
+	subCtx, cancel := subscriptionContext(payload.TTLSeconds)
 	sub := &subscription{payload: payload, cancel: cancel, podKey: podKey}
 	m.subs[payload.SubscriptionID] = sub
 	m.podSubs[podKey] = payload.SubscriptionID
@@ -168,6 +166,13 @@ func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
 
 	go m.run(subCtx, sub)
 	return nil
+}
+
+func subscriptionContext(ttlSeconds int) (context.Context, context.CancelFunc) {
+	if ttlSeconds > 0 {
+		return context.WithTimeout(context.Background(), time.Duration(ttlSeconds)*time.Second)
+	}
+	return context.WithCancel(context.Background())
 }
 
 func (m *Manager) Stop(subscriptionID string) error {
@@ -282,23 +287,51 @@ func (m *Manager) run(ctx context.Context, sub *subscription) {
 		}
 	}
 
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			appendLine(strings.TrimRight(line, "\r\n"))
-		}
-		if err != nil {
-			if err != io.EOF && ctx.Err() == nil {
-				m.log.Warn("log stream read failed", "subscription_id", payload.SubscriptionID, "error", err)
+	lineCh := make(chan string, m.backlogMax)
+	readErrCh := make(chan error, 1)
+	go func() {
+		defer close(lineCh)
+		for {
+			line, err := reader.ReadString('\n')
+			if len(line) > 0 {
+				select {
+				case lineCh <- strings.TrimRight(line, "\r\n"):
+				case <-ctx.Done():
+					return
+				}
 			}
-			flush(true)
-			return
+			if err != nil {
+				if err != io.EOF {
+					readErrCh <- err
+				}
+				return
+			}
 		}
+	}()
+
+	// Flush partial batches so follow streams publish sooner than batchSize lines.
+	flushTicker := time.NewTicker(time.Second)
+	defer flushTicker.Stop()
+
+	for {
 		select {
 		case <-ctx.Done():
 			flush(true)
 			return
-		default:
+		case <-flushTicker.C:
+			flush(true)
+		case err := <-readErrCh:
+			if ctx.Err() == nil {
+				m.log.Warn("log stream read failed", "subscription_id", payload.SubscriptionID, "error", err)
+			}
+			flush(true)
+			return
+		case line, ok := <-lineCh:
+			if !ok {
+				flush(true)
+				return
+			}
+			appendLine(line)
 		}
 	}
 }

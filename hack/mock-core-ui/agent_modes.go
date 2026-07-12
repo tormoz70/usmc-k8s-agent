@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,10 +28,10 @@ type agentModePreset struct {
 }
 
 type agentModeFeature struct {
-	ID          string `json:"id"`
-	Enabled     bool   `json:"enabled"`
-	Description string `json:"description,omitempty"`
-	RBACRole    string `json:"rbac_role,omitempty"`
+	ID          string   `json:"id"`
+	Enabled     bool     `json:"enabled"`
+	Description string   `json:"description,omitempty"`
+	RBACRole    string   `json:"rbac_role,omitempty"`
 	WatchGVK    []string `json:"watch_gvk,omitempty"`
 }
 
@@ -53,10 +55,11 @@ type applyAgentModeResponse struct {
 }
 
 type agentModeController struct {
-	cfg        config
-	presets    []agentModePreset
-	k8s        kubernetes.Interface
-	restConfig *rest.Config
+	cfg           config
+	presets       []agentModePreset
+	k8s           kubernetes.Interface
+	restConfig    *rest.Config
+	kubeInitError string
 }
 
 func newAgentModeController(cfg config) *agentModeController {
@@ -80,6 +83,7 @@ func newAgentModeController(cfg config) *agentModeController {
 	clientset, restCfg, err := newKubeClients(cfg.Kubeconfig)
 	if err != nil {
 		c.k8s = nil
+		c.kubeInitError = err.Error()
 	} else {
 		c.k8s = clientset
 		c.restConfig = restCfg
@@ -88,6 +92,15 @@ func newAgentModeController(cfg config) *agentModeController {
 }
 
 func newKubeClients(kubeconfig string) (kubernetes.Interface, *rest.Config, error) {
+	if kubeconfig != "" {
+		if st, err := os.Stat(kubeconfig); err != nil {
+			return nil, nil, fmt.Errorf("kubeconfig %s: %w", kubeconfig, err)
+		} else if st.IsDir() {
+			return nil, nil, fmt.Errorf("kubeconfig %s is a directory (host path not mounted correctly)", kubeconfig)
+		} else if st.Size() == 0 {
+			return nil, nil, fmt.Errorf("kubeconfig %s is empty", kubeconfig)
+		}
+	}
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
@@ -98,11 +111,58 @@ func newKubeClients(kubeconfig string) (kubernetes.Interface, *rest.Config, erro
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := rewriteKubeHost(restCfg); err != nil {
+		return nil, nil, err
+	}
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	return clientset, restCfg, nil
+}
+
+// rewriteKubeHost remaps localhost/127.0.0.1 API server to a host reachable from Docker
+// (kind kubeconfig uses 127.0.0.1; from a compose container that is the container itself).
+func rewriteKubeHost(restCfg *rest.Config) error {
+	rewrite := strings.TrimSpace(os.Getenv("KUBE_HOST_REWRITE"))
+	if rewrite == "" || restCfg == nil || restCfg.Host == "" {
+		return nil
+	}
+	raw := restCfg.Host
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse apiserver host %q: %w", restCfg.Host, err)
+	}
+	host := u.Hostname()
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return nil
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	origServerName := host
+	u.Host = net.JoinHostPort(rewrite, port)
+	restCfg.Host = u.String()
+	// Keep TLS verification against the original kind server name / IP SAN.
+	if restCfg.TLSClientConfig.ServerName == "" {
+		restCfg.TLSClientConfig.ServerName = origServerName
+	}
+	return nil
+}
+
+func (c *agentModeController) kubeUnavailableMessage() string {
+	if c.kubeInitError != "" {
+		return c.kubeInitError
+	}
+	return "KUBECONFIG not configured or cluster unreachable"
 }
 
 func (c *agentModeController) listPresets() []agentModePreset {
@@ -144,7 +204,7 @@ func (c *agentModeController) status(ctx context.Context) (*agentModeStatus, err
 		CurrentMode:  "unknown",
 	}
 	if !st.K8sAvailable {
-		st.K8sError = "KUBECONFIG not configured or cluster unreachable"
+		st.K8sError = c.kubeUnavailableMessage()
 		return st, nil
 	}
 

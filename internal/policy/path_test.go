@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseAPIPathDeployment(t *testing.T) {
 	req, err := ParseAPIPath("GET", "/apis/apps/v1/namespaces/payments/deployments/api")
@@ -64,5 +67,21 @@ func TestParseAPIPathRoleBindings(t *testing.T) {
 	}
 	if req.Kind != "RoleBinding" || req.Namespace != "" {
 		t.Fatalf("unexpected cluster list: %+v", req)
+	}
+}
+
+func TestParseAPIPathStripsQuery(t *testing.T) {
+	req, err := ParseAPIPath("GET", "/api/v1/namespaces/test-namespace-1/pods?labelSelector=app%3Dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Group != "" || req.Version != "v1" || req.Kind != "Pod" {
+		t.Fatalf("unexpected gvk: %+v", req)
+	}
+	if req.Namespace != "test-namespace-1" || req.Name != "" {
+		t.Fatalf("unexpected ns/name: %+v", req)
+	}
+	if strings.Contains(req.Path, "?") {
+		t.Fatalf("path should not keep query: %q", req.Path)
 	}
 }

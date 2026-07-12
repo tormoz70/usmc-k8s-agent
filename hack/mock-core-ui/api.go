@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -192,6 +193,40 @@ func (s *server) handleMessageStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleMessageHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	topic := r.URL.Query().Get("topic")
+	if topic == "" {
+		topic = s.cfg.ReplyTopic
+	}
+	correlationID := r.URL.Query().Get("correlation_id")
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid limit"))
+			return
+		}
+		limit = n
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	msgs, err := mockcorelib.ReadRecentMessages(ctx, s.cfg.Brokers, topic, limit, correlationID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"topic":  topic,
+		"limit":  limit,
+		"count":  len(msgs),
+		"messages": msgs,
+	})
+}
+
 func (s *server) handleS3Head(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -222,6 +257,23 @@ func (s *server) handleAgentModes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"modes": s.modes.listPresets(),
 	})
+}
+
+func (s *server) handleClusterInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	includeSystem := r.URL.Query().Get("include_system") == "1" ||
+		strings.EqualFold(r.URL.Query().Get("include_system"), "true")
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	inv, err := s.modes.inventory(ctx, includeSystem)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
 }
 
 func (s *server) handleAgentMode(w http.ResponseWriter, r *http.Request) {

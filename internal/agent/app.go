@@ -44,6 +44,7 @@ type App struct {
 	consumer     *kafka.Consumer
 	publisher    *kafka.Publisher
 	processor    *kafka.Processor
+	commandGuard *kafka.CommandGuard
 	http         *httpapi.Server
 	podNamespace string
 }
@@ -123,10 +124,9 @@ func New(opts Options) (*App, error) {
 		tempRoot,
 	)
 
-	consumer, err := kafka.NewConsumer(opts.Config.Kafka, log)
-	if err != nil {
-		return nil, fmt.Errorf("kafka consumer: %w", err)
-	}
+	// Kafka consumer joins a consumer group. Only the leader may FetchMessage, so we create
+	// the consumer lazily in commandLoop (not here). Creating it for every replica — including
+	// agent-service / standby egress — assigns the partition to a pod that never reads → stuck lag.
 	publisher, err := kafka.NewPublisher(opts.Config.Kafka, log)
 	if err != nil {
 		return nil, fmt.Errorf("kafka publisher: %w", err)
@@ -203,7 +203,6 @@ func New(opts Options) (*App, error) {
 	router := command.NewRouter(handlers...)
 
 	commandGuard := kafka.NewCommandGuard(engine)
-	processor := kafka.NewProcessor(consumer, publisher, router, commandGuard, opts.Config.Kafka.CommitOnReceive, metrics, log)
 	state := observability.NewRuntimeState()
 
 	var httpRouter *command.Router
@@ -224,9 +223,8 @@ func New(opts Options) (*App, error) {
 		streamMgr:    streamMgr,
 		healthMgr:    healthMgr,
 		router:       router,
-		consumer:     consumer,
 		publisher:    publisher,
-		processor:    processor,
+		commandGuard: commandGuard,
 		http:         httpServer,
 		podNamespace: envOrDefault("POD_NAMESPACE", "uamc-agent"),
 	}, nil
@@ -278,8 +276,13 @@ func (a *App) shutdown(ctx context.Context) error {
 	a.state.SetKafkaConnected(false)
 	a.metrics.SyncFromState(a.state)
 	a.stopSubscriptions()
-	_ = a.consumer.Close()
-	_ = a.publisher.Close()
+	if a.consumer != nil {
+		_ = a.consumer.Close()
+		a.consumer = nil
+	}
+	if a.publisher != nil {
+		_ = a.publisher.Close()
+	}
 	if a.http != nil {
 		return a.http.Shutdown(ctx)
 	}

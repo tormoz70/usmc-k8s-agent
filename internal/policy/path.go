@@ -29,6 +29,10 @@ func ParseAPIPath(method, path string) (*APIRequest, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	// Query strings are for apiserver filtering; they must not affect GVK parsing.
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
 
 	req := &APIRequest{Method: method, Path: path, Verb: httpMethodVerb(method)}
 

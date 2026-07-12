@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -86,6 +87,15 @@ func (p *Processor) handleMessage(ctx context.Context, msg kafkago.Message) erro
 	started := time.Now()
 	resp, err := p.executor.Handle(ctx, cmd, meta)
 	if err != nil {
+		// Always reply + commit so UI/core never hang waiting on a correlation_id.
+		failed := result.Failed(cmd.CommandID, meta.CorrelationID, "ExecuteFailed", "AGENT_EXECUTE_ERROR", err.Error(), started.UTC(), time.Now().UTC())
+		if pubErr := p.publisher.PublishResponse(ctx, meta.ReplyTopic, meta.CorrelationID, failed); pubErr != nil {
+			return fmt.Errorf("execute: %w; publish failed reply: %v", err, pubErr)
+		}
+		p.recordCommand(cmd.Type, failed.Status, started)
+		if commitErr := p.commit(ctx, msg); commitErr != nil {
+			return fmt.Errorf("execute: %w; commit: %v", err, commitErr)
+		}
 		return err
 	}
 	if resp == nil {

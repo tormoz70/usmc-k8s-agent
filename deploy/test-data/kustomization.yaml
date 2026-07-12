@@ -5,4 +5,7 @@ resources:
   - namespaces.yaml
   - test-namespace-1.yaml
   - test-namespace-2.yaml
+  - test-namespaces-3-5.yaml
+  - services.yaml
   - uamcsa-rolebindings.yaml
+  - extra-rbac.yaml

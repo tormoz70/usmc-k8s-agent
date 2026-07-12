@@ -91,9 +91,6 @@ func (a *App) runEgress(ctx context.Context, devNoLeader bool) error {
 	a.state.SetKafkaConnected(true)
 	a.metrics.SyncFromState(a.state)
 
-	remote := bridge.NewRemoteExecutor(a.cfg.Agent.AgentServiceURL, a.cfg.HTTP.InternalBearerToken)
-	a.processor = kafka.NewProcessor(a.consumer, a.publisher, remote, kafka.NewCommandGuard(a.policy), a.cfg.Kafka.CommitOnReceive, a.metrics, a.log)
-
 	leaseName := a.cfg.Agent.LeaderLeaseName
 	if leaseName == "" {
 		leaseName = "k8s-agent-egress-leader"
@@ -130,6 +127,34 @@ func (a *App) commandLoop() func(context.Context) {
 			a.patchLeaderLabel(ctx, true)
 			defer a.patchLeaderLabel(context.Background(), false)
 		}
+
+		// Join the Kafka consumer group only while leading. Standby replicas must not hold partitions.
+		consumer, err := kafka.NewConsumer(a.cfg.Kafka, a.log)
+		if err != nil {
+			a.log.Error("kafka consumer create failed", "error", err)
+			return
+		}
+		a.consumer = consumer
+		defer func() {
+			_ = consumer.Close()
+			if a.consumer == consumer {
+				a.consumer = nil
+			}
+		}()
+
+		var executor kafka.CommandExecutor = a.router
+		if a.cfg.Agent.Component == config.ComponentEgress {
+			executor = bridge.NewRemoteExecutor(a.cfg.Agent.AgentServiceURL, a.cfg.HTTP.InternalBearerToken)
+		}
+		a.processor = kafka.NewProcessor(
+			consumer,
+			a.publisher,
+			executor,
+			a.commandGuard,
+			a.cfg.Kafka.CommitOnReceive,
+			a.metrics,
+			a.log,
+		)
 
 		lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
 		if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
@@ -188,14 +213,16 @@ func (a *App) startProbeServer() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	// Readiness must NOT require leadership: leader-only /readyz blocks RollingUpdate
+	// (new pods never become Ready while the old leader holds the lease).
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if a.state.IsLeader() {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"ready":true}`))
+		if !a.state.KafkaConnected() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"ready":false,"kafka":false}`))
 			return
 		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"ready":false}`))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ready":true,"leader":` + boolJSON(a.state.IsLeader()) + `}`))
 	})
 
 	srv := &http.Server{
@@ -209,4 +236,11 @@ func (a *App) startProbeServer() error {
 		}
 	}()
 	return nil
+}
+
+func boolJSON(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }

@@ -187,22 +187,203 @@
       margin-bottom: 1rem;
     }
     .mode-banner.warn { border-color: var(--warn); }
+    .cluster-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .cluster-stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.65rem 1rem;
+      min-width: 7rem;
+    }
+    .cluster-stat strong {
+      display: block;
+      font-size: 1.25rem;
+      line-height: 1.2;
+    }
+    .cluster-stat span {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .ns-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .ns-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: hidden;
+    }
+    .ns-card summary {
+      cursor: pointer;
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .ns-card summary::-webkit-details-marker { display: none; }
+    .ns-card summary::before {
+      content: "▸";
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+    .ns-card[open] summary::before { content: "▾"; }
+    .ns-meta {
+      font-weight: 400;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .ns-body {
+      border-top: 1px solid var(--border);
+      padding: 0.75rem 1rem 1rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 700px) { .ns-body { grid-template-columns: 1fr; } }
+    .ns-body h4 {
+      margin: 0 0 0.5rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .res-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8125rem;
+    }
+    .res-list li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid rgba(45, 58, 79, 0.5);
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .res-list li:last-child { border-bottom: none; }
+    .res-list .muted { color: var(--muted); font-size: 0.75rem; }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+    .check-row input { width: auto; }
+    main.wide { max-width: 1280px; }
+    .topic-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .topic-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.35rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.8125rem;
+      user-select: none;
+    }
+    .topic-chip input { width: auto; margin: 0; }
+    .topic-chip.active {
+      border-color: var(--accent);
+      color: var(--text);
+      background: rgba(59, 130, 246, 0.12);
+    }
+    .monitor-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-bottom: 1rem;
+    }
+    .monitor-toolbar .field { min-width: 10rem; flex: 1; }
+    .monitor-toolbar .field.narrow { flex: 0 0 8rem; min-width: 7rem; }
+    .monitor-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+    .monitor-stats strong { color: var(--text); }
+    .messages { max-height: min(70vh, 720px); }
+    .message.live { border-left: 3px solid var(--accent); }
+    .message.history { border-left: 3px solid var(--border); }
+    .message-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem 0.6rem;
+      margin-bottom: 0.5rem;
+    }
+    .message-title {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8125rem;
+      font-weight: 600;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.6875rem;
+      padding: 0.12rem 0.45rem;
+      border-radius: 999px;
+      font-weight: 500;
+    }
+    .badge.topic { background: rgba(59, 130, 246, 0.15); color: #93c5fd; }
+    .badge.type { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; }
+    .badge.completed { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+    .badge.failed, .badge.rejected { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+    .badge.executing { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+    .badge.neutral { background: rgba(139, 156, 179, 0.15); color: var(--muted); }
+    .message details.headers {
+      margin-top: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .message details.headers summary { cursor: pointer; }
+    .message.hidden { display: none; }
+    button.primary:disabled, button.secondary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>mock-core UI</h1>
-    <p>Local core-client simulator — send commands, watch Kafka replies, verify S3 uploads</p>
+    <p>Local core-client simulator — send commands, monitor Kafka messages, inspect cluster, verify S3 uploads</p>
   </header>
 
   <nav class="tabs">
     <button class="tab active" data-tab="commands">Commands</button>
-    <button class="tab" data-tab="responses">Responses</button>
+    <button class="tab" data-tab="kafka">Kafka Monitor</button>
+    <button class="tab" data-tab="cluster">Cluster</button>
     <button class="tab" data-tab="agent-mode">Agent Mode</button>
     <button class="tab" data-tab="s3">S3 Check</button>
   </nav>
 
-  <main>
+  <main class="wide">
     <section id="panel-commands" class="panel active">
       <div class="row">
         <div>
@@ -222,24 +403,62 @@
       </div>
     </section>
 
-    <section id="panel-responses" class="panel">
-      <div class="row">
-        <div>
-          <label for="stream-topic">Topic</label>
-          <select id="stream-topic"></select>
+    <section id="panel-kafka" class="panel">
+      <label>Topics</label>
+      <div class="topic-chips" id="topic-chips"></div>
+      <div class="monitor-toolbar">
+        <div class="field">
+          <label for="custom-topic">Custom topic</label>
+          <input id="custom-topic" type="text" placeholder="core-client.dev.responses">
         </div>
-        <div>
-          <label for="correlation-id">Correlation ID filter</label>
+        <div class="field">
+          <label for="correlation-id">Correlation ID</label>
           <input id="correlation-id" type="text" placeholder="corr-...">
         </div>
+        <div class="field">
+          <label for="message-filter">Client filter</label>
+          <input id="message-filter" type="text" placeholder="type, status, command_id…">
+        </div>
+        <div class="field narrow">
+          <label for="history-limit">History</label>
+          <input id="history-limit" type="number" min="1" max="500" value="50">
+        </div>
       </div>
-      <div class="actions">
-        <button class="secondary" id="connect-btn">Connect stream</button>
+      <div class="actions" style="margin-top:0;">
+        <button class="primary" id="live-btn">Start live</button>
+        <button class="secondary" id="pause-btn" disabled>Pause</button>
+        <button class="secondary" id="history-btn">Load history</button>
         <button class="secondary" id="clear-btn">Clear</button>
-        <span class="status" id="stream-status">Disconnected</span>
+        <span class="status" id="stream-status">Idle</span>
+      </div>
+      <div class="monitor-stats" id="monitor-stats">
+        <span>Shown: <strong id="stat-shown">0</strong></span>
+        <span>Buffered: <strong id="stat-total">0</strong></span>
+        <span>Live topics: <strong id="stat-live">—</strong></span>
       </div>
       <div class="messages" id="messages">
-        <div class="empty">Connect to a topic to see messages</div>
+        <div class="empty">Select topics, then Start live or Load history</div>
+      </div>
+    </section>
+
+    <section id="panel-cluster" class="panel">
+      <div id="cluster-banner" class="mode-banner">
+        <strong>Cluster inventory</strong>
+        <p style="margin:0.5rem 0 0;color:var(--muted);font-size:0.875rem;">
+          Live namespaces, Deployments and Pods from kubeconfig (same as Agent Mode).
+        </p>
+      </div>
+      <label class="check-row">
+        <input type="checkbox" id="cluster-include-system">
+        Include system namespaces (kube-system, default, …)
+      </label>
+      <div class="actions" style="margin-top:0;">
+        <button class="primary" id="cluster-refresh-btn">Refresh</button>
+        <span class="status" id="cluster-status"></span>
+      </div>
+      <div class="cluster-summary" id="cluster-summary"></div>
+      <div class="ns-list" id="cluster-ns-list">
+        <div class="empty">Open this tab to load cluster state</div>
       </div>
     </section>
 
@@ -300,6 +519,9 @@
         if (tab.dataset.tab === 'agent-mode') {
           loadAgentModes().catch(err => console.error(err));
         }
+        if (tab.dataset.tab === 'cluster') {
+          loadClusterInventory().catch(err => console.error(err));
+        }
       });
     });
 
@@ -311,8 +533,11 @@
 
     let templates = [];
     let topics = [];
-    let eventSource = null;
-    let lastCorrelationId = '';
+    let replyTopicDefault = '';
+    let eventSources = new Map(); // topic -> EventSource
+    let livePaused = false;
+    let messageSeq = 0;
+    const MAX_BUFFERED = 300;
 
     async function loadConfig() {
       const [tplRes, topRes] = await Promise.all([
@@ -323,7 +548,8 @@
       const topData = await topRes.json();
       templates = tplData.templates || [];
       topics = topData.topics || [];
-      document.getElementById('reply-topic').value = topData.reply_topic || '';
+      replyTopicDefault = topData.reply_topic || '';
+      document.getElementById('reply-topic').value = replyTopicDefault;
 
       const tplSelect = document.getElementById('template');
       tplSelect.innerHTML = '<option value="">— select template —</option>';
@@ -334,15 +560,45 @@
         tplSelect.appendChild(opt);
       });
 
-      const topicSelect = document.getElementById('stream-topic');
-      topicSelect.innerHTML = '';
+      renderTopicChips(replyTopicDefault || topics[0] || '');
+    }
+
+    function renderTopicChips(preselect) {
+      const box = document.getElementById('topic-chips');
+      box.innerHTML = '';
       topics.forEach(t => {
-        const opt = document.createElement('option');
-        opt.value = t;
-        opt.textContent = t;
-        topicSelect.appendChild(opt);
+        const label = document.createElement('label');
+        label.className = 'topic-chip' + (t === preselect ? ' active' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = t;
+        cb.checked = t === preselect;
+        cb.addEventListener('change', () => {
+          label.classList.toggle('active', cb.checked);
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(t));
+        box.appendChild(label);
       });
-      topicSelect.value = topData.reply_topic || topics[0] || '';
+    }
+
+    function selectedTopics() {
+      const checked = [...document.querySelectorAll('#topic-chips input:checked')].map(el => el.value);
+      const custom = document.getElementById('custom-topic').value.trim();
+      if (custom && !checked.includes(custom)) checked.push(custom);
+      return checked;
+    }
+
+    function selectOnlyTopic(topic) {
+      document.querySelectorAll('#topic-chips input').forEach(cb => {
+        cb.checked = cb.value === topic;
+        cb.closest('.topic-chip').classList.toggle('active', cb.checked);
+      });
+      if (![...document.querySelectorAll('#topic-chips input')].some(cb => cb.value === topic)) {
+        document.getElementById('custom-topic').value = topic;
+      } else {
+        document.getElementById('custom-topic').value = '';
+      }
     }
 
     function formatCommandBody(body) {
@@ -366,24 +622,134 @@
       el.className = 'status' + (cls ? ' ' + cls : '');
     }
 
-    function addMessage(msg) {
+    function parseBody(msg) {
+      try {
+        return typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function messageSearchText(msg) {
+      const body = parseBody(msg);
+      const parts = [
+        msg.topic,
+        msg.correlation_id,
+        msg.key,
+        JSON.stringify(msg.headers || {}),
+        typeof msg.body === 'string' ? msg.body : JSON.stringify(msg.body),
+      ];
+      if (body) {
+        parts.push(body.type, body.status, body.command_id, body.reason, body.event_type);
+      }
+      return parts.filter(Boolean).join(' ').toLowerCase();
+    }
+
+    function matchesClientFilter(msg) {
+      const q = document.getElementById('message-filter').value.trim().toLowerCase();
+      if (!q) return true;
+      return messageSearchText(msg).includes(q);
+    }
+
+    function updateMonitorStats() {
+      const cards = [...document.querySelectorAll('#messages .message')];
+      const shown = cards.filter(el => !el.classList.contains('hidden')).length;
+      document.getElementById('stat-shown').textContent = String(shown);
+      document.getElementById('stat-total').textContent = String(cards.length);
+      const live = [...eventSources.keys()];
+      document.getElementById('stat-live').textContent = live.length ? live.join(', ') : '—';
+    }
+
+    function applyClientFilter() {
+      document.querySelectorAll('#messages .message').forEach(el => {
+        const text = el.dataset.search || '';
+        const q = document.getElementById('message-filter').value.trim().toLowerCase();
+        el.classList.toggle('hidden', q !== '' && !text.includes(q));
+      });
+      updateMonitorStats();
+    }
+
+    function addMessage(msg, source) {
+      if (livePaused && source === 'live') return;
+
       const container = document.getElementById('messages');
       const empty = container.querySelector('.empty');
       if (empty) empty.remove();
 
+      const body = parseBody(msg);
       const div = document.createElement('div');
-      div.className = 'message';
+      div.className = 'message ' + (source === 'history' ? 'history' : 'live');
+      div.dataset.search = messageSearchText(msg);
+      div.dataset.seq = String(++messageSeq);
+      if (!matchesClientFilter(msg)) div.classList.add('hidden');
+
+      const head = document.createElement('div');
+      head.className = 'message-head';
+
+      const topicBadge = document.createElement('span');
+      topicBadge.className = 'badge topic';
+      topicBadge.textContent = msg.topic || '—';
+      head.appendChild(topicBadge);
+
+      if (body && body.type) {
+        const typeBadge = document.createElement('span');
+        typeBadge.className = 'badge type';
+        typeBadge.textContent = body.type;
+        head.appendChild(typeBadge);
+      }
+      if (body && body.status) {
+        const st = document.createElement('span');
+        const cls = ['completed', 'failed', 'rejected', 'executing'].includes(body.status)
+          ? body.status : 'neutral';
+        st.className = 'badge ' + cls;
+        st.textContent = body.status;
+        head.appendChild(st);
+      }
+      if (body && body.event_type) {
+        const ev = document.createElement('span');
+        ev.className = 'badge neutral';
+        ev.textContent = body.event_type;
+        head.appendChild(ev);
+      }
+
+      const title = document.createElement('span');
+      title.className = 'message-title';
+      const corr = msg.correlation_id || (body && body.correlation_id) || '—';
+      title.textContent = `offset=${msg.offset} · corr=${corr}`;
+      head.appendChild(title);
+
       const meta = document.createElement('div');
       meta.className = 'message-meta';
-      meta.textContent = `[${msg.topic}] offset=${msg.offset} correlation_id=${msg.correlation_id || '—'} @ ${msg.timestamp || ''}`;
+      const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '';
+      meta.textContent = [
+        source === 'history' ? 'history' : 'live',
+        `p${msg.partition ?? 0}`,
+        body && body.command_id ? `cmd=${body.command_id}` : null,
+        ts,
+      ].filter(Boolean).join(' · ');
+
       const pre = document.createElement('pre');
       pre.textContent = typeof msg.body === 'string' ? msg.body : JSON.stringify(msg.body, null, 2);
+
+      div.appendChild(head);
       div.appendChild(meta);
       div.appendChild(pre);
+
+      if (msg.headers && Object.keys(msg.headers).length) {
+        const details = document.createElement('details');
+        details.className = 'headers';
+        details.innerHTML = `<summary>Headers</summary><pre>${escapeHtml(JSON.stringify(msg.headers, null, 2))}</pre>`;
+        div.appendChild(details);
+      }
+
       container.prepend(div);
 
+      while (container.querySelectorAll('.message').length > MAX_BUFFERED) {
+        container.lastElementChild.remove();
+      }
+      updateMonitorStats();
+
       try {
-        const body = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
         if (body && body.s3_bucket && body.s3_key) {
           document.getElementById('s3-bucket').value = body.s3_bucket;
           document.getElementById('s3-key').value = body.s3_key;
@@ -391,29 +757,81 @@
       } catch (_) {}
     }
 
-    function connectStream() {
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-      }
-      const topic = document.getElementById('stream-topic').value;
-      const corr = document.getElementById('correlation-id').value.trim();
-      const params = new URLSearchParams({ topic });
-      if (corr) params.set('correlation_id', corr);
+    function stopLive() {
+      eventSources.forEach(es => es.close());
+      eventSources.clear();
+      livePaused = false;
+      document.getElementById('pause-btn').disabled = true;
+      document.getElementById('pause-btn').textContent = 'Pause';
+      document.getElementById('live-btn').textContent = 'Start live';
+      updateMonitorStats();
+    }
 
+    function startLive(topicsOverride) {
+      const topicList = topicsOverride && topicsOverride.length ? topicsOverride : selectedTopics();
+      if (!topicList.length) {
+        setStatus(document.getElementById('stream-status'), 'Select at least one topic', 'err');
+        return;
+      }
+      stopLive();
+      const corr = document.getElementById('correlation-id').value.trim();
       const statusEl = document.getElementById('stream-status');
       setStatus(statusEl, 'Connecting…', 'waiting');
 
-      eventSource = new EventSource('/api/messages/stream?' + params.toString());
-      eventSource.addEventListener('connected', () => {
-        setStatus(statusEl, `Connected to ${topic}`, 'ok');
+      let connected = 0;
+      topicList.forEach(topic => {
+        const params = new URLSearchParams({ topic });
+        if (corr) params.set('correlation_id', corr);
+        const es = new EventSource('/api/messages/stream?' + params.toString());
+        eventSources.set(topic, es);
+        es.addEventListener('connected', () => {
+          connected += 1;
+          setStatus(statusEl, `Live (${connected}): ${[...eventSources.keys()].join(', ')}`, 'ok');
+          updateMonitorStats();
+        });
+        es.addEventListener('message', ev => {
+          addMessage(JSON.parse(ev.data), 'live');
+        });
+        es.addEventListener('error', () => {
+          setStatus(statusEl, `Stream error on ${topic}`, 'err');
+        });
       });
-      eventSource.addEventListener('message', ev => {
-        addMessage(JSON.parse(ev.data));
-      });
-      eventSource.addEventListener('error', () => {
-        setStatus(statusEl, 'Stream error or closed', 'err');
-      });
+      document.getElementById('live-btn').textContent = 'Restart live';
+      document.getElementById('pause-btn').disabled = false;
+      updateMonitorStats();
+    }
+
+    async function loadHistory(topicsOverride, correlationOverride) {
+      const topicList = topicsOverride && topicsOverride.length ? topicsOverride : selectedTopics();
+      if (!topicList.length) {
+        setStatus(document.getElementById('stream-status'), 'Select at least one topic', 'err');
+        return;
+      }
+      const statusEl = document.getElementById('stream-status');
+      const corr = (correlationOverride != null && correlationOverride !== '')
+        ? String(correlationOverride).trim()
+        : document.getElementById('correlation-id').value.trim();
+      const limit = document.getElementById('history-limit').value || '50';
+      setStatus(statusEl, 'Loading history…', 'waiting');
+      try {
+        let total = 0;
+        const all = [];
+        for (const topic of topicList) {
+          const params = new URLSearchParams({ topic, limit });
+          if (corr) params.set('correlation_id', corr);
+          const res = await fetch('/api/messages/history?' + params.toString());
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          const msgs = data.messages || [];
+          total += msgs.length;
+          all.push(...msgs);
+        }
+        all.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+        all.forEach(msg => addMessage(msg, 'history'));
+        setStatus(statusEl, `Loaded ${total} message(s)`, 'ok');
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
     }
 
     document.getElementById('send-btn').addEventListener('click', async () => {
@@ -437,21 +855,38 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
-        lastCorrelationId = data.correlation_id;
         setStatus(statusEl, `Sent ${data.correlation_id}`, 'ok');
         document.getElementById('correlation-id').value = data.correlation_id;
-        document.getElementById('stream-topic').value = data.reply_topic;
-        switchTab('responses');
-        connectStream();
+        selectOnlyTopic(data.reply_topic);
+        switchTab('kafka');
+        // Start live first, then pull recent history so fast replies are not missed.
+        startLive([data.reply_topic]);
+        await loadHistory([data.reply_topic], data.correlation_id);
       } catch (e) {
         setStatus(statusEl, e.message, 'err');
       }
     });
 
-    document.getElementById('connect-btn').addEventListener('click', connectStream);
+    document.getElementById('live-btn').addEventListener('click', () => startLive());
+    document.getElementById('pause-btn').addEventListener('click', () => {
+      livePaused = !livePaused;
+      const btn = document.getElementById('pause-btn');
+      btn.textContent = livePaused ? 'Resume' : 'Pause';
+      const statusEl = document.getElementById('stream-status');
+      if (livePaused) {
+        setStatus(statusEl, 'Paused (streams still open)', 'waiting');
+      } else {
+        setStatus(statusEl, `Live: ${[...eventSources.keys()].join(', ') || '—'}`, 'ok');
+      }
+    });
+    document.getElementById('history-btn').addEventListener('click', () => {
+      loadHistory().catch(err => console.error(err));
+    });
     document.getElementById('clear-btn').addEventListener('click', () => {
       document.getElementById('messages').innerHTML = '<div class="empty">No messages yet</div>';
+      updateMonitorStats();
     });
+    document.getElementById('message-filter').addEventListener('input', applyClientFilter);
 
     document.getElementById('s3-check-btn').addEventListener('click', async () => {
       const statusEl = document.getElementById('s3-status');
@@ -586,6 +1021,94 @@
       } catch (e) {
         setStatus(statusEl, e.message, 'err');
       }
+    });
+
+    async function loadClusterInventory() {
+      const statusEl = document.getElementById('cluster-status');
+      const includeSystem = document.getElementById('cluster-include-system').checked;
+      setStatus(statusEl, 'Loading…', 'waiting');
+      const params = new URLSearchParams();
+      if (includeSystem) params.set('include_system', '1');
+      const res = await fetch('/api/cluster/inventory?' + params.toString());
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+
+      const banner = document.getElementById('cluster-banner');
+      if (!data.k8s_available || data.k8s_error) {
+        banner.classList.add('warn');
+        setStatus(statusEl, data.k8s_error || 'Kubernetes unavailable', 'err');
+      } else {
+        banner.classList.remove('warn');
+        setStatus(statusEl, 'Updated', 'ok');
+      }
+
+      const counts = data.counts || {};
+      document.getElementById('cluster-summary').innerHTML = `
+        <div class="cluster-stat"><strong>${counts.namespaces || 0}</strong><span>Namespaces</span></div>
+        <div class="cluster-stat"><strong>${counts.deployments || 0}</strong><span>Deployments</span></div>
+        <div class="cluster-stat"><strong>${counts.pods || 0}</strong><span>Pods</span></div>`;
+
+      const list = document.getElementById('cluster-ns-list');
+      const namespaces = data.namespaces || [];
+      if (!namespaces.length) {
+        list.innerHTML = '<div class="empty">No namespaces found</div>';
+        return;
+      }
+      list.innerHTML = '';
+      namespaces.forEach(ns => {
+        const details = document.createElement('details');
+        details.className = 'ns-card';
+        if (ns.name === 'uamc-agent' || ns.name.startsWith('test-')) {
+          details.open = true;
+        }
+        const depCount = (ns.deployments || []).length;
+        const podCount = (ns.pods || []).length;
+        details.innerHTML = `
+          <summary>
+            ${escapeHtml(ns.name)}
+            <span class="chip ${ns.phase === 'Active' ? 'on' : 'off'}">${escapeHtml(ns.phase || '—')}</span>
+            <span class="ns-meta">${depCount} deploy · ${podCount} pods</span>
+          </summary>
+          <div class="ns-body">
+            <div>
+              <h4>Deployments</h4>
+              ${renderResourceList(ns.deployments, d =>
+                `<li><span>${escapeHtml(d.name)}</span><span class="muted">${d.ready_replicas}/${d.desired_replicas}</span></li>`)}
+            </div>
+            <div>
+              <h4>Pods</h4>
+              ${renderResourceList(ns.pods, p =>
+                `<li><span>${escapeHtml(p.name)}</span><span class="muted">${escapeHtml(p.phase)}${p.ready ? ' · ready' : ''}</span></li>`)}
+            </div>
+          </div>`;
+        list.appendChild(details);
+      });
+    }
+
+    function renderResourceList(items, rowFn) {
+      if (!items || !items.length) {
+        return '<div class="empty" style="padding:0.5rem 0;text-align:left;">—</div>';
+      }
+      return `<ul class="res-list">${items.map(rowFn).join('')}</ul>`;
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    document.getElementById('cluster-refresh-btn').addEventListener('click', () => {
+      loadClusterInventory().catch(e => {
+        setStatus(document.getElementById('cluster-status'), e.message, 'err');
+      });
+    });
+    document.getElementById('cluster-include-system').addEventListener('change', () => {
+      loadClusterInventory().catch(e => {
+        setStatus(document.getElementById('cluster-status'), e.message, 'err');
+      });
     });
   </script>
 </body>

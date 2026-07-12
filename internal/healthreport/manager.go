@@ -139,7 +139,7 @@ func (p *StartPayload) OutputTopicOr(defaultTopic string) string {
 	return defaultTopic
 }
 
-func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
+func (m *Manager) Start(_ context.Context, payload *StartPayload) error {
 	if err := m.policy.AllowCommandType(command.TypeHealthReportStart); err != nil {
 		return err
 	}
@@ -159,16 +159,21 @@ func (m *Manager) Start(parent context.Context, payload *StartPayload) error {
 		m.mu.Unlock()
 		return fmt.Errorf("subscription %q already exists", payload.SubscriptionID)
 	}
-	subCtx, cancel := context.WithCancel(parent)
-	if payload.TTLSeconds > 0 {
-		subCtx, cancel = context.WithTimeout(subCtx, time.Duration(payload.TTLSeconds)*time.Second)
-	}
+	// Do not derive from the command request context — it is cancelled when the reply is sent.
+	subCtx, cancel := subscriptionContext(payload.TTLSeconds)
 	sub := &subscription{payload: payload, cancel: cancel}
 	m.subs[payload.SubscriptionID] = sub
 	m.mu.Unlock()
 
 	go m.run(subCtx, sub)
 	return nil
+}
+
+func subscriptionContext(ttlSeconds int) (context.Context, context.CancelFunc) {
+	if ttlSeconds > 0 {
+		return context.WithTimeout(context.Background(), time.Duration(ttlSeconds)*time.Second)
+	}
+	return context.WithCancel(context.Background())
 }
 
 func (m *Manager) Stop(subscriptionID string) error {

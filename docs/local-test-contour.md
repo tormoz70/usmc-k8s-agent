@@ -572,7 +572,8 @@ curl http://localhost:8080/v1/cache/feature/test-namespace-1/new-checkout
 
 | Условие | Compose (Docker) | UI на хосте |
 | --- | --- | --- |
-| kubeconfig | Монтируется `~/.kube/config` → `/kube/config` | `$env:KUBECONFIG="$env:USERPROFILE\.kube\config"` |
+| kubeconfig | Монтируется `%USERPROFILE%\.kube\config` → `/kube/config` | при необходимости: `$env:KUBECONFIG_HOST_PATH="$env:USERPROFILE\.kube\config"` |
+| API server rewrite | `KUBE_HOST_REWRITE=host.docker.internal` | kind слушает на `127.0.0.1` хоста |
 | policy-профили | Volume `./deploy/base/policy:/policy` | `FEATURES_DIR=deploy/base/policy` |
 | kind context | `kubectl config use-context kind-k8s-agent` | то же |
 
@@ -584,7 +585,13 @@ docker compose exec mock-core-ui ls /policy
 kubectl get configmap k8s-agent-policy -n uamc-agent -o jsonpath='{.data.features\.yaml}' | Select-Object -First 5
 ```
 
-Если **Agent Mode** показывает «KUBECONFIG not available» — убедитесь, что kind-кластер создан и файл kubeconfig существует; на Windows путь в compose: `${HOME}/.kube/config` или задайте `KUBECONFIG` в `.env`.
+Если **Agent Mode** / **Cluster** показывают ошибку kubeconfig — на Windows переменная `HOME` часто пустая. Compose берёт `%USERPROFILE%\.kube\config`. Пересоздайте UI:
+
+```powershell
+docker compose up -d --build mock-core-ui
+```
+
+Проверка mount: `docker inspect …-mock-core-ui-1` — Source должен быть `C:\Users\<you>\.kube\config`, не `\.kube\config`.
 
 После **Apply mode** дождитесь rollout (~1–2 мин):
 

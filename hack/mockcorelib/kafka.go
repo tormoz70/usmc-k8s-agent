@@ -206,3 +206,76 @@ func StreamMessages(ctx context.Context, brokers []string, topic, correlationID 
 		}
 	}
 }
+
+// ReadRecentMessages returns up to limit newest messages from partition 0 (oldest→newest).
+// correlationID filters by Kafka header when non-empty.
+func ReadRecentMessages(ctx context.Context, brokers []string, topic string, limit int, correlationID string) ([]Message, error) {
+	if len(brokers) == 0 {
+		return nil, fmt.Errorf("no kafka brokers configured")
+	}
+	if topic == "" {
+		return nil, fmt.Errorf("topic is required")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	ensureTopicBeforeUse(brokers, topic)
+
+	conn, err := kafkago.DialLeader(ctx, "tcp", brokers[0], topic, 0)
+	if err != nil {
+		return nil, fmt.Errorf("dial leader for %s: %w", topic, err)
+	}
+	defer conn.Close()
+
+	first, last, err := conn.ReadOffsets()
+	if err != nil {
+		return nil, fmt.Errorf("read offsets for %s: %w", topic, err)
+	}
+	if last <= first {
+		return []Message{}, nil
+	}
+
+	// When filtering by correlation_id, scan a wider window then keep matches.
+	scanLimit := limit
+	if correlationID != "" {
+		scanLimit = limit * 20
+		if scanLimit > 2000 {
+			scanLimit = 2000
+		}
+	}
+	start := last - int64(scanLimit)
+	if start < first {
+		start = first
+	}
+	if _, err := conn.Seek(start, kafkago.SeekAbsolute); err != nil {
+		return nil, fmt.Errorf("seek %s@%d: %w", topic, start, err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(15 * time.Second)
+	}
+	_ = conn.SetReadDeadline(deadline)
+
+	out := make([]Message, 0, limit)
+	for {
+		msg, err := conn.ReadMessage(10e6) // 10MB max
+		if err != nil {
+			break
+		}
+		if correlationID != "" && HeaderValue(msg.Headers, "correlation_id") != correlationID {
+			continue
+		}
+		out = append(out, FormatMessage(topic, msg))
+		if msg.Offset+1 >= last {
+			break
+		}
+	}
+	if correlationID != "" && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}

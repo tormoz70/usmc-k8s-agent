@@ -61,6 +61,10 @@ func (r *RemoteExecutor) Handle(ctx context.Context, cmd *command.Command, meta 
 	if err != nil {
 		return nil, err
 	}
+	// Async commands (e.g. logs.collect) acknowledge with 202 and nil body payload.
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("agent-service returned %d: %s", resp.StatusCode, string(data))
 	}

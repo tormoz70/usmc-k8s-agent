@@ -18,6 +18,7 @@ resources:
   - serviceaccount.yaml
   - clusterrole.yaml
   - clusterrole-watch.yaml
+  - clusterrole-cluster-read.yaml
   - uamcsa-rolebinding.yaml
   - uamcsa-clusterrolebinding-watch.yaml
   - deployment-ingress.yaml

@@ -3,3 +3,6 @@ namespaces:
   - uamc-agent
   - test-namespace-1
   - test-namespace-2
+  - test-namespace-3
+  - test-namespace-4
+  - test-namespace-5

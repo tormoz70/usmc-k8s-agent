@@ -1,0 +1,176 @@
+# Demo Services for Cluster tab / k8s.api list fixtures (one per workload namespace).
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: test-namespace-1
+  labels:
+    app: web
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: test-namespace-1
+  labels:
+    app: api
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-api
+  namespace: test-namespace-1
+  labels:
+    app: billing-api
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: billing-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: products
+  namespace: test-namespace-2
+  labels:
+    app: products
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: products
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: indexer
+  namespace: test-namespace-2
+  labels:
+    app: indexer
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: indexer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: test-namespace-3
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: test-namespace-3
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: test-namespace-4
+  labels:
+    app: payments
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: payments
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: test-namespace-4
+  labels:
+    app: orders
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: orders
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog
+  namespace: test-namespace-5
+  labels:
+    app: catalog
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: catalog
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: search
+  namespace: test-namespace-5
+  labels:
+    app: search
+    app.kubernetes.io/part-of: test-data
+spec:
+  selector:
+    app: search
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

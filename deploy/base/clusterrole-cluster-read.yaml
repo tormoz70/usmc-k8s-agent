@@ -1,0 +1,32 @@
+# Cluster-wide read for inventory lists (Services, RoleBindings, … across namespaces).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-agent-cluster-read
+  labels:
+    app.kubernetes.io/part-of: uamc-agent
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "namespaces", "events", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: uamcsa-cluster-read
+  labels:
+    app.kubernetes.io/part-of: uamc-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-agent-cluster-read
+subjects:
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent

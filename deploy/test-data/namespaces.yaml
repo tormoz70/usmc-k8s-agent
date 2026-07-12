@@ -11,3 +11,24 @@ metadata:
   name: test-namespace-2
   labels:
     app.kubernetes.io/part-of: test-data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace-3
+  labels:
+    app.kubernetes.io/part-of: test-data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace-4
+  labels:
+    app.kubernetes.io/part-of: test-data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace-5
+  labels:
+    app.kubernetes.io/part-of: test-data

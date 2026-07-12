@@ -1,0 +1,16 @@
+{
+  "schema_version": "v1",
+  "command_id": "cmd-test-list-all-rolebindings",
+  "type": "k8s.api",
+  "issuer": "mock-core",
+  "idempotency_key": "cluster/rbac/v1/rolebindings/list-all",
+  "timeout": "30s",
+  "issued_at": "2026-07-12T00:00:00Z",
+  "http": {
+    "method": "GET",
+    "path": "/apis/rbac.authorization.k8s.io/v1/rolebindings",
+    "headers": {
+      "Accept": "application/json"
+    }
+  }
+}

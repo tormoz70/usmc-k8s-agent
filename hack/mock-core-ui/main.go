@@ -87,9 +87,11 @@ func main() {
 	mux.HandleFunc("/api/topics", srv.handleTopics)
 	mux.HandleFunc("/api/commands", srv.handleCommands)
 	mux.HandleFunc("/api/messages/stream", srv.handleMessageStream)
+	mux.HandleFunc("/api/messages/history", srv.handleMessageHistory)
 	mux.HandleFunc("/api/s3/head", srv.handleS3Head)
 	mux.HandleFunc("/api/agent/modes", srv.handleAgentModes)
 	mux.HandleFunc("/api/agent/mode", srv.handleAgentMode)
+	mux.HandleFunc("/api/cluster/inventory", srv.handleClusterInventory)
 	mux.HandleFunc("/api/health", srv.handleHealth)
 
 	slog.Info("mock-core-ui listening", "addr", cfg.Addr, "brokers", cfg.Brokers, "fixtures", cfg.FixturesDir)

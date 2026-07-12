@@ -61,12 +61,17 @@
       FIXTURES_DIR: /fixtures
       FEATURES_DIR: /policy
       KUBECONFIG: /kube/config
+      # kind kubeconfig points at 127.0.0.1 — rewrite for access from this container
+      KUBE_HOST_REWRITE: host.docker.internal
       AGENT_NAMESPACE: uamc-agent
       MINIO_CONSOLE_URL: http://localhost:9001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./test/fixtures:/fixtures:ro
       - ./deploy/base/policy:/policy:ro
-      - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
+      # Windows: USERPROFILE; Linux/macOS: HOME. Override with KUBECONFIG host path if needed.
+      - ${KUBECONFIG_HOST_PATH:-${USERPROFILE:-${HOME}}/.kube/config}:/kube/config:ro
     depends_on:
       - redpanda
       - minio
