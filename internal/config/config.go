@@ -21,6 +21,10 @@ const (
 	ComponentIngress      = "ingress"
 	ComponentEgress       = "egress"
 	ComponentAgentService = "agent-service"
+
+	KafkaModeJSON     = "json"
+	KafkaModeProtobuf = "protobuf"
+	KafkaModeDual     = "dual"
 )
 
 // Config holds agent runtime configuration loaded from environment variables.
@@ -47,6 +51,15 @@ type KafkaConfig struct {
 	TLSRequired             bool
 	ClientPrincipal         string
 	TLS                     TLSConfig
+	Mode                    string // json | protobuf | dual
+	InRequestTopicTemplate  string
+	OutResponseTopicTemplate string
+	OutRequestTopic         string
+	EventsWatcherTopic      string
+	MetricsWatcherTopic     string
+	ShadowConsumerGroup     string
+	ResponseTimeoutMs       int
+	HeartbeatTimeoutMs      int
 }
 
 type TLSConfig struct {
@@ -78,6 +91,8 @@ type AgentConfig struct {
 	K8sAPIQPS               float32
 	K8sAPIBurst             int
 	InstanceID              string
+	RegistrationEnabled     bool
+	RegistrationDelayMs     int
 }
 
 type HTTPConfig struct {
@@ -153,6 +168,15 @@ func Load() (*Config, error) {
 				CertFile: env("KAFKA_TLS_CERT_FILE", ""),
 				KeyFile:  env("KAFKA_TLS_KEY_FILE", ""),
 			},
+			Mode:                     strings.ToLower(env("KAFKA_MODE", KafkaModeJSON)),
+			InRequestTopicTemplate:   env("KAFKA_IN_REQUEST_TOPIC_TEMPLATE", "uamc-core.ssl.request.{cluster-id}-{uamc-agent}"),
+			OutResponseTopicTemplate: env("KAFKA_OUT_RESPONSE_TOPIC_TEMPLATE", "uamc-agent.ssl.response.{cluster-id}-{uamc-agent}"),
+			OutRequestTopic:          env("KAFKA_OUT_REQUEST_TOPIC", "uamc-agent.ssl.request"),
+			EventsWatcherTopic:       env("KAFKA_EVENTS_WATCHER_TOPIC", "uamc-events-watcher.ssl.request"),
+			MetricsWatcherTopic:      env("KAFKA_METRICS_WATCHER_TOPIC", "uamc-metrics-watcher.ssl.request"),
+			ShadowConsumerGroup:      env("KAFKA_SHADOW_CONSUMER_GROUP", ""),
+			ResponseTimeoutMs:        intFromEnv("KAFKA_RESPONSE_TIMEOUT_MS", 10000),
+			HeartbeatTimeoutMs:       intFromEnv("KAFKA_HEARTBEAT_TIMEOUT_MS", 2000),
 		},
 		S3: S3Config{
 			Endpoint:       env("S3_ENDPOINT", ""),
@@ -175,6 +199,8 @@ func Load() (*Config, error) {
 			K8sAPIQPS:               float32FromEnv("K8S_API_QPS", 50),
 			K8sAPIBurst:             intFromEnv("K8S_API_BURST", 100),
 			InstanceID:              instanceID,
+			RegistrationEnabled:     envBool("AGENT_REGISTRATION_ENABLED", false),
+			RegistrationDelayMs:     intFromEnv("AGENT_REGISTRATION_DELAY_MS", 1000),
 		},
 		HTTP: HTTPConfig{
 			Port:                httpPort,
@@ -192,11 +218,29 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SYNC_WORKER_CONCURRENCY must be >= 1")
 	}
 
+	switch cfg.Kafka.Mode {
+	case KafkaModeJSON, KafkaModeProtobuf, KafkaModeDual, "":
+		if cfg.Kafka.Mode == "" {
+			cfg.Kafka.Mode = KafkaModeJSON
+		}
+	default:
+		return nil, fmt.Errorf("KAFKA_MODE must be one of: json, protobuf, dual")
+	}
+
 	if err := cfg.validateComponent(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// ResolveTopic replaces {cluster-id} and {uamc-agent} placeholders.
+func ResolveTopic(template, clusterID string) string {
+	r := strings.NewReplacer(
+		"{cluster-id}", clusterID,
+		"{uamc-agent}", "uamc-agent",
+	)
+	return r.Replace(template)
 }
 
 func (c *Config) validateComponent() error {

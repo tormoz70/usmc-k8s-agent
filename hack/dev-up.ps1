@@ -46,19 +46,19 @@ Require-Command docker
 Require-Command kind
 Require-Command kubectl
 
-Write-Host "`n[1/4] Starting docker compose (Kafka, MinIO, mock-core UI)..."
+Write-Host "`n[1/5] Starting docker compose (Kafka, MinIO, mock-core UI)..."
 & docker compose up -d --build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "`n[2/4] Waiting for infra..."
+Write-Host "`n[2/5] Waiting for infra..."
 Wait-TcpPort "localhost" 9092 $InfraTimeoutSec
-Wait-TcpPort "localhost" 9000 $InfraTimeoutSec
+Wait-TcpPort "localhost" 9010 $InfraTimeoutSec
 Wait-HttpOk "http://localhost:8090/api/health" $InfraTimeoutSec
 Write-Host "Ensuring Kafka topics..."
 & powershell -NoProfile -ExecutionPolicy Bypass -File hack/kafka-init.ps1
 Write-Host "Infra is ready."
 
-Write-Host "`n[3/4] Bootstrapping kind cluster and deploying agent..."
+Write-Host "`n[3/5] Bootstrapping kind cluster and deploying agent..."
 & powershell -NoProfile -ExecutionPolicy Bypass -File hack/bootstrap.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -73,17 +73,25 @@ foreach ($dep in @("ingress", "egress", "agent-service")) {
     }
 }
 
-Write-Host "`n[4/4] Seeding test cluster data..."
+Write-Host "`n[4/5] Seeding test cluster data..."
 & powershell -NoProfile -ExecutionPolicy Bypass -File hack/seed-test-data.ps1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "`n[5/5] Exposing agent HTTP on localhost:8080 (for mock-core-ui REST scenarios)..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File hack/port-forward-agent-http.ps1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'WARN: port-forward failed - Kafka scenarios still work; REST needs: powershell -File hack/port-forward-agent-http.ps1' -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "=== Environment ready ===" -ForegroundColor Green
 Write-Host "  mock-core UI:  http://localhost:8090"
 Write-Host "  Kafka UI:      http://localhost:8088"
-Write-Host "  MinIO Console: http://localhost:9001"
+Write-Host "  MinIO Console: http://localhost:9011"
+Write-Host "  Agent HTTP:    http://localhost:8080/healthz  (port-forward)"
 Write-Host ""
 Write-Host "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
 Write-Host "  kubectl logs -n test-namespace-1 logger-a -f"
 Write-Host ""
-Write-Host "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"
+Write-Host 'Smoke test: http://localhost:8090 -> Scenarios -> ui-list-pods -> Run'
+Write-Host 'REST smoke:  http://localhost:8090 -> Scenarios -> rest-healthz -> Run'

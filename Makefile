@@ -2,12 +2,16 @@ MODULE ?= github.com/usmc/usmc-k8s-agent
 BIN  ?= bin/agent
 IMAGE ?= k8s-agent:dev
 
-.PHONY: all build test test-integration lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full seed-test-data clean
+.PHONY: all build test test-integration lint tidy docker kind-up deploy-local mock-core mock-core-ui dev-up dev-down dev-down-full seed-test-data clean proto
 
 all: build
 
 build:
 	go build -o $(BIN) ./cmd/agent
+
+# Generate Go from api/proto (requires buf). Stub JSON codecs in api/gen remain until Java protos replace them.
+proto:
+	buf generate
 
 mock-core:
 	go build -o bin/mock-core ./hack/mock-core

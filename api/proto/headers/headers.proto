@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package uamc.agent.headers;
+
+option go_package = "github.com/usmc/usmc-k8s-agent/api/gen/headers";
+
+// ProtoHeaders mirrors Java CoreClient message headers for Kafka.
+// Frozen stub until official .proto files are imported from uamc-core.
+message ProtoHeaders {
+  string message_id = 1;
+  string correlation_id = 2;
+  string topic = 3;
+  string topic_for_response = 4;
+  Direction direction = 5;
+  string addressee = 6;
+  string sender = 7;
+  string message_type = 8;
+  string request_type = 9;
+  string timestamp = 10;
+  bool zipped = 11;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  REQUEST = 1;
+  RESPONSE = 2;
+}

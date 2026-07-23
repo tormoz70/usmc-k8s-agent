@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package uamc.agent.registration;
+
+option go_package = "github.com/usmc/usmc-k8s-agent/api/gen/registration";
+
+// AgentRegistrationRequest is sent by the agent on leader start (self-registration).
+message AgentRegistrationRequest {
+  string cluster_id = 1;
+  string agent_instance_id = 2;
+  string cluster_name = 3;
+  repeated string modules = 4;
+}
+
+message AgentRegistrationResponse {
+  bool accepted = 1;
+  string message = 2;
+}

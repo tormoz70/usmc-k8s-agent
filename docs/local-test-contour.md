@@ -1,15 +1,17 @@
 # Локальный тестовый контур
 
-Гибридная схема для разработки и ручного E2E-тестирования **usmc-k8s-agent**.
+Гибридная схема для разработки и ручного E2E-тестирования **usmc-k8s-agent** (корневой модуль `cmd/agent` + `internal/`).
 
 > **Быстрый старт:** `make dev-up` — compose (Kafka, MinIO, mock-core UI) + kind-кластер с агентом + test-data.  
-> **UI:** http://localhost:8090 — команды, ответы, S3, **Agent Mode** (переключение профиля features).  
-> **E2E (7 сценариев):** [§7.3](#73-e2e-сценарии-реестр-и-алгоритм-проверки).  
+> **UI:** http://localhost:8090 — вкладка **Scenarios** (UI-заглушки), Commands, Kafka Monitor, S3, **Agent Mode**.  
+> **Модель:** Java core — «чёрный ящик»; mock-core UI имитирует только запросы UI → агент (Kafka / S3 / REST).  
+> **E2E (7 сценариев CLI):** [§7.3](#73-e2e-сценарии-реестр-и-алгоритм-проверки).  
 > **RBAC / features:** [§4.5](#45-rbac-и-профили-features) · [`rbac-features-capacity.md`](./rbac-features-capacity.md).  
 > `docker compose up -d` — только инфраструктура без агента.
 
 > Агент работает **in-cluster** (ServiceAccount, RBAC, leader election).  
-> Compose даёт Kafka, S3 и mock-core UI; Kubernetes — отдельно (kind).
+> Compose даёт Kafka, S3 и mock-core UI; Kubernetes — отдельно (kind).  
+> Nested каталог [`k8s-agent/`](../k8s-agent/) — **archived**, не используйте для локального контура.
 
 ## Схема
 
@@ -19,12 +21,14 @@
 │                                                             │
 │  docker compose                                             │
 │    ├── Redpanda (Kafka)      :9092                          │
-│    ├── MinIO (S3)            :9000 / console :9001          │
+│    ├── MinIO (S3)            :9010 / console :9011          │
 │    ├── Kafka UI              :8088                          │
-│    └── mock-core UI          :8090  (Commands / Agent Mode) │
+│    └── mock-core UI          :8090  (Scenarios / Commands)  │
 │                                                             │
-│  mock-core UI / CLI  ──► k8s.commands.request               │
-│                        ◄── reply_topic (header)             │
+│  mock-core UI  ──Kafka──► k8s.commands.request              │
+│                ◄───────── reply_topic (header)              │
+│                ──REST───► agent HTTP :8080 (healthz/cache)  │
+│                ──S3─────► MinIO :9010 (после logs.collect)  │
 │                                                             │
 │  kind cluster `k8s-agent`                                   │
 │    namespace `uamc-agent`:                                  │
@@ -39,7 +43,7 @@
 | Компонент prod | Локальная замена | Где запускается |
 | --- | --- | --- |
 | Managed Kafka | Redpanda (PLAINTEXT) | `docker compose` |
-| AWS S3 | MinIO | `docker compose` |
+| AWS S3 | MinIO (`:9010`) | `docker compose` |
 | Kubernetes | kind | Docker |
 | Java core-client | **mock-core UI** (`:8090`) или CLI `hack/mock-core` | compose / хост |
 | Feature flags | `features.yaml` / `features-minimal.yaml` | ConfigMap + UI **Agent Mode** |
@@ -145,14 +149,25 @@ docker compose ps
 docker compose up -d --build mock-core-ui
 ```
 
-`mock-core-ui` монтирует `./test/fixtures` и `./deploy/base/policy`; для вкладки **Agent Mode** нужен kubeconfig (см. [§5.10](#510-agent-mode--переключение-профиля-features)).
+`mock-core-ui` монтирует `./test/fixtures` и `./deploy/base/policy`; для вкладки **Agent Mode** нужен kubeconfig (см. [§5.10](#510-agent-mode--переключение-профиля-features)).  
+Для REST-проб агента UI использует `AGENT_HTTP_URL` (по умолчанию `http://host.docker.internal:8080`).  
+Сервис `k8s-agent-http` в kind — **ClusterIP**, поэтому на хосте нужен port-forward:
+
+```powershell
+powershell -File hack\port-forward-agent-http.ps1
+# проверка:
+curl http://localhost:8080/healthz
+```
+
+`make dev-up` поднимает этот port-forward автоматически (шаг 5/5).
 
 PowerShell — дополнительно проверить порты:
 
 ```powershell
 docker compose ps
 Test-NetConnection localhost -Port 9092   # Kafka
-Test-NetConnection localhost -Port 9000   # MinIO S3
+Test-NetConnection localhost -Port 9010   # MinIO S3
+Test-NetConnection localhost -Port 9011   # MinIO Console
 Test-NetConnection localhost -Port 8088   # Kafka UI
 Test-NetConnection localhost -Port 8090   # mock-core UI
 ```
@@ -162,8 +177,8 @@ Test-NetConnection localhost -Port 8090   # mock-core UI
 | Сервис | URL / порт | Учётные данные |
 | --- | --- | --- |
 | Kafka (Redpanda) | `localhost:9092` | без auth |
-| MinIO S3 API | `http://localhost:9000` | `minioadmin` / `minioadmin` |
-| MinIO Console | http://localhost:9001 | те же |
+| MinIO S3 API | `http://localhost:9010` | `minioadmin` / `minioadmin` |
+| MinIO Console | http://localhost:9011 | те же |
 | Kafka UI | http://localhost:8088 | — |
 | **mock-core UI** | **http://localhost:8090** | — |
 
@@ -179,14 +194,14 @@ docker compose up -d minio-init
 
 Ручное создание (альтернатива):
 
-1. Откройте http://localhost:9001
+1. Откройте http://localhost:9011
 2. Login: `minioadmin` / `minioadmin`
 3. **Buckets → Create Bucket →** `logs-bundles`
 
 Или через CLI (`mc`), если установлен:
 
 ```bash
-mc alias set local http://localhost:9000 minioadmin minioadmin
+mc alias set local http://localhost:9010 minioadmin minioadmin
 mc mb local/logs-bundles
 ```
 
@@ -348,7 +363,7 @@ kubectl run test-busybox --image=busybox:1.36 --labels=app=test --command -- sh 
 
 ## 5. Тестирование агента через mock-core UI
 
-Основной способ ручного E2E: веб-UI имитирует Java **core-client** — отправляет команды в Kafka и показывает ответы агента.
+Основной способ ручного E2E: веб-UI имитирует **запросы UI/core** к агенту. Сам Java core считается чёрным ящиком — интересны только каналы **Kafka → агент**, **S3 (MinIO)** и **REST агента**.
 
 ### 5.1 Подготовка окружения
 
@@ -386,41 +401,64 @@ kubectl rollout status deployment/agent-service -n uamc-agent
 
 | Вкладка | Назначение |
 | --- | --- |
-| **Commands** | Шаблон команды, JSON, поле **Reply topic**, кнопка **Send command** |
-| **Responses** | Live-лента ответов из Kafka; фильтр по **Correlation ID** |
-| **Agent Mode** | Текущий профиль features, переключение Full ↔ Observability, список RBAC-групп |
-| **S3 Check** | Проверка объекта в MinIO после `logs.collect` |
+| **Scenarios** | UI-заглушки одним кликом: Kafka-команды, REST probes (`/healthz`, `/v1/cache`), flows (logs→S3, cache.put→GET) |
+| **Commands** | Ручной шаблон из `test/fixtures`, JSON, **Reply topic**, **Send command** |
+| **Kafka Monitor** | Live/history по топикам (`reply`, `cluster.events`, `logs.stream`, …), фильтр по correlation_id |
+| **Cluster** | Inventory namespaces/pods/deployments через kubeconfig |
+| **Agent Mode** | Профиль features Full ↔ Observability, RBAC-группы |
+| **S3 Check** | HEAD объекта в MinIO после `logs.collect` |
 
-Поток работы:
+Поток работы (рекомендуется через **Scenarios**):
 
 ```text
-Commands: выбрать шаблон → Send command
+Scenarios: выбрать карточку → Run
     ↓
 UI публикует в k8s.commands.request (correlation_id + reply_topic)
+  и/или дергает AGENT_HTTP_URL (REST)
     ↓
-k8s-agent (leader) обрабатывает → пишет ответ в reply topic
+k8s-agent (leader) обрабатывает → reply topic / S3 / HTTP ответ
     ↓
-Responses: сообщение с тем же correlation_id
+Результат на панели + подсказка открыть Kafka Monitor / S3 Check
 ```
 
-После **Send command** UI автоматически переключается на **Responses** и подписывается на reply topic (`core-client.dev.responses` по умолчанию).
+Альтернатива вручную:
 
-**Успешный ответ** — JSON со `"status": "completed"`. Ошибки: `"status": "failed"` или `"rejected"` — смотрите поле `error` / `message` в теле.
+```text
+Commands: шаблон → Send command → Kafka Monitor (тот же correlation_id)
+```
+
+**Успешный Kafka-ответ** — JSON со `"status": "completed"`. Ошибки: `"status": "failed"` или `"rejected"` — смотрите поле `error` / `message` в теле.
+
+### 5.2.1 UI-заглушки (Scenarios)
+
+Каталог stubs: `GET /api/scenarios`, запуск: `POST /api/scenarios/run` с телом `{ "id": "…" }`.
+
+| Группа | Примеры id | Канал |
+| --- | --- | --- |
+| Kafka / inventory | `ui-list-namespaces`, `ui-list-pods`, `ui-list-deployments` | Kafka `k8s.api` |
+| Kafka / watch | `ui-watch-pods`, `ui-watch-pods-stop` | Kafka + топик `cluster.events` |
+| Kafka / logs + S3 | `ui-logs-collect`, `ui-logs-stream-start` | Kafka; collect → MinIO |
+| Kafka / cache | `ui-cache-put`, `ui-cache-delete` | Kafka |
+| Kafka / health | `ui-health-report-start` | Kafka + `cluster.health` |
+| REST agent | `rest-healthz`, `rest-readyz`, `rest-metrics`, `rest-cache-list` | HTTP `AGENT_HTTP_URL` |
+| Flows | `flow-logs-to-s3`, `flow-cache-put-get` | Kafka + ожидание reply + S3/REST |
+
+Код stubs: [`hack/mock-core-ui/scenarios.go`](../hack/mock-core-ui/scenarios.go).
 
 ### 5.3 Быстрые шаблоны для smoke-теста
 
-После `make dev-up` в dropdown **Template** доступны готовые JSON. Рекомендуемый порядок «за 2 минуты»:
+**Вариант A (один клик):** http://localhost:8090 → **Scenarios** → `UI: список Namespace` → **Run**.
 
-| # | Шаблон | Что проверяет | Ожидание в Responses |
+**Вариант B (Commands):** после `make dev-up` в dropdown **Template** доступны JSON из `test/fixtures`. Рекомендуемый порядок:
+
+| # | Шаблон / Scenario | Что проверяет | Ожидание |
 | --- | --- | --- | --- |
-| 1 | `k8s-api-list-namespaces` | list Namespace (feature `cluster_inventory`) | `"status": "completed"`, `test-namespace-1/2` |
-| 2 | `k8s-api-list-pods` | list pod'ов с `app=test` | `logger-a`, `logger-b` в теле |
+| 1 | `k8s-api-list-namespaces` / `ui-list-namespaces` | list Namespace | `"status": "completed"`, `test-namespace-1/2` |
+| 2 | `k8s-api-list-pods` / `ui-list-pods` | list pod'ов `app=test` | `logger-a`, `logger-b` |
 | 3 | `k8s-api-list-deployments` | list Deployment'ов | JSON `items` из `test-namespace-1` |
-| 4 | `watch-subscribe-pods` + stream `cluster.events` | watch Pod ADDED | событие после `kubectl run …` |
-| 5 | `watch-subscribe-namespaces` + stream `cluster.events` | watch Namespace (cluster-scoped) | ADDED после `kubectl create ns …` |
-| 6 | `cache-put` → `cache-delete` | cache write + delete | оба `"status": "completed"` |
-
-Шаблоны 1–3 — тип `k8s.api`, достаточно **Send command**. Watch (4–5) — сначала **Connect stream** на `cluster.events`, затем команда.
+| 4 | `watch-subscribe-pods` / `ui-watch-pods` | watch Pod | события в `cluster.events` |
+| 5 | `cache-put` → REST `rest-cache-list` / `flow-cache-put-get` | cache write + HTTP GET | Kafka completed + REST 200 |
+| 6 | `logs-collect` / `flow-logs-to-s3` | zip → MinIO | `s3_bucket` / `s3_key`, HEAD ok |
 
 > **Namespace list:** включён через feature `cluster_inventory` и RBAC `namespaces: get, list, watch` в `clusterrole.yaml`. Запросы к ресурсам вне allow-list namespace'ов по-прежнему отклоняются policy.
 
@@ -428,14 +466,16 @@ Responses: сообщение с тем же correlation_id
 
 Проверяет, что агент читает Kafka и ходит в kube-apiserver.
 
-1. Вкладка **Commands**
-2. **Template** → `k8s-api-list-services (k8s.api)` — самый быстрый первый запрос (list Service в `test-namespace-1`)
-3. **Reply topic** — оставьте `core-client.dev.responses`
-4. Нажмите **Send command**
-5. Вкладка **Responses** — через несколько секунд появится сообщение с вашим `correlation_id`
-6. В теле ответа: `"status": "completed"`, в `body` — JSON от apiserver
+**Через Scenarios:** карточка **UI: список Service** / **UI: список Namespace** → **Run**.
 
-Для проверки test pod'ов выберите `k8s-api-list-pods` — в ответе должны быть `logger-a` и `logger-b`.
+**Через Commands:**
+
+1. Вкладка **Commands**
+2. **Template** → `k8s-api-list-services (k8s.api)`
+3. **Reply topic** — оставьте `core-client.dev.responses`
+4. **Send command**
+5. Вкладка **Kafka Monitor** — сообщение с вашим `correlation_id`
+6. В теле: `"status": "completed"`, в `body` — JSON от apiserver
 
 Если ответа нет более 1–2 минут — см. [§13 Troubleshooting](#13-troubleshooting).
 
@@ -443,35 +483,37 @@ Responses: сообщение с тем же correlation_id
 
 Нужны test pod'ы с label `app=test` (создаёт `make dev-up`).
 
+**Через Scenarios:** **Flow: logs.collect → проверить S3** (`flow-logs-to-s3`) — UI дождётся reply и сделает HEAD объекта.
+
+**Вручную:**
+
 1. **Commands** → шаблон `logs-collect (logs.collect)`
 2. **Send command**
-3. В **Responses** дождитесь `"status": "completed"` — в ответе будут `s3_bucket` и `s3_key`
-4. Вкладка **S3 Check** — bucket и key подставятся автоматически из ответа
-5. **Check object** — должны увидеть размер файла и ссылку **Open in MinIO Console**
-
-Альтернатива: http://localhost:9001 → bucket `logs-bundles` → key `logs/test/bundle.zip`.
+3. В **Kafka Monitor** дождитесь `"status": "completed"` — в ответе будут `s3_bucket` и `s3_key`
+4. Вкладка **S3 Check** — bucket/key (из ответа или flow подставит сам) → **Check object**
+5. Консоль MinIO: http://localhost:9011 → bucket `logs-bundles`
 
 ### 5.6 watch.subscribe — события pod'ов
 
-1. Вкладка **Responses**
-2. **Topic** → `cluster.events`
+1. Вкладка **Kafka Monitor**
+2. Выберите топик `cluster.events` → **Start live**
 3. **Correlation ID** — очистите (слушаем все события)
-4. **Connect stream**
-5. Вкладка **Commands** → шаблон `watch-subscribe-pods (watch.subscribe)` → **Send command**
-6. В другом терминале создайте или удалите pod:
+4. Вкладка **Commands** → шаблон `watch-subscribe-pods (watch.subscribe)` → **Send command**  
+   (или **Scenarios** → `ui-watch-pods`)
+5. В другом терминале создайте или удалите pod:
 
 ```powershell
 kubectl run demo-pod --image=nginx:1.27 --labels=app=test -n test-namespace-1
 kubectl delete pod demo-pod -n test-namespace-1
 ```
 
-7. В **Responses** на topic `cluster.events` появятся события ADDED/DELETED
+6. В **Kafka Monitor** на topic `cluster.events` появятся события ADDED/DELETED
 
 ### 5.6.1 «Контролировать namespace» — watch на новые Namespace
 
-Задача core: подписаться на появление/удаление namespace в кластере. Используется `watch.subscribe` с GVK `Namespace` (cluster-scoped, поле `namespace` в payload **не нужно**).
+Задача: подписаться на появление/удаление namespace в кластере. Используется `watch.subscribe` с GVK `Namespace` (cluster-scoped, поле `namespace` в payload **не нужно**).
 
-1. **Responses** → Topic `cluster.events` → **Connect stream**
+1. **Kafka Monitor** → Topic `cluster.events` → **Start live**
 2. **Commands** → шаблон `watch-subscribe-namespaces` → **Send command**
 3. Ответ в reply topic:
 
@@ -503,7 +545,7 @@ bin\mock-core -scenario 07-watch-namespaces
 
 Feature `watch_events` + GVK `Deployment` (RBAC `k8s-agent-watch`).
 
-1. **Responses** → Topic `cluster.events` → **Connect stream**
+1. **Kafka Monitor** → Topic `cluster.events` → **Start live**
 2. **Commands** → `watch-subscribe-deployments` → **Send command**
 3. В другом терминале перезапустите deployment:
 
@@ -517,7 +559,7 @@ kubectl rollout restart deployment/web -n test-namespace-1
 ### 5.7 cache.put + HTTP GET
 
 1. **Commands** → `cache-put (cache.put)` → **Send command**
-2. В **Responses** — `"status": "completed"`
+2. В **Kafka Monitor** — `"status": "completed"`
 3. В **отдельном терминале** — port-forward на HTTP API leader pod:
 
 ```powershell
@@ -534,9 +576,9 @@ curl http://localhost:8080/v1/cache/feature/test-namespace-1/new-checkout
 
 ### 5.8 health.report — периодические snapshots
 
-1. **Responses** → **Topic** `cluster.health` → **Connect stream**
+1. **Kafka Monitor** → **Topic** `cluster.health` → **Start live**
 2. **Commands** → `health-report-start (health.report.start)` → **Send command**
-3. В **Responses** каждые ~30 с приходят snapshot'ы pod'ов из allow-list namespace'ов (TTL 600 с — автоостановка через 10 мин)
+3. В **Kafka Monitor** каждые ~30 с приходят snapshot'ы pod'ов из allow-list namespace'ов (TTL 600 с — автоостановка через 10 мин)
 
 Остановка: **Commands** → `health-report-stop (health.report.stop)` или fixture `health-report-stop.json`. Подробнее — [§7.3.8](#738-сценарий-06--health-report-10-мин-ttl).
 
@@ -619,14 +661,18 @@ make mock-core-ui
 go build -o bin/mock-core-ui ./hack/mock-core-ui
 
 $env:KAFKA_BROKERS="localhost:9092"
-$env:S3_ENDPOINT="http://localhost:9000"
+$env:S3_ENDPOINT="http://localhost:9010"
+$env:S3_FORCE_PATH_STYLE="true"
 $env:FIXTURES_DIR="test/fixtures"
 $env:FEATURES_DIR="deploy/base/policy"
+$env:AGENT_HTTP_URL="http://localhost:8080"
+$env:MINIO_CONSOLE_URL="http://localhost:9011"
 $env:KUBECONFIG="$env:USERPROFILE\.kube\config"
 .\bin\mock-core-ui.exe
 ```
 
-UI доступен на http://localhost:8090. Compose и kind должны быть уже запущены.
+UI доступен на http://localhost:8090. Compose и kind должны быть уже запущены.  
+REST-пробы из вкладки **Scenarios** ходят на `AGENT_HTTP_URL` (ingress/agent HTTP).
 
 ---
 
@@ -677,7 +723,7 @@ Reply topic по умолчанию: `core-client.dev.responses` (создаёт
 
 Пошаговые инструкции — в [§5](#5-тестирование-агента-через-mock-core-ui).
 
-Кратко: `make dev-up` → http://localhost:8090 → шаблон `k8s-api-list-deployments` → **Send command** → ответ на вкладке **Responses**.
+Кратко: `make dev-up` → http://localhost:8090 → **Scenarios** → `ui-list-deployments` → **Run** (или **Commands** → шаблон → **Send command** → **Kafka Monitor**).
 
 ### 7.2 Через CLI mock-core
 
@@ -871,7 +917,7 @@ bin\mock-core -scenario 03-logs-stream
 
 1. Отправить команду, дождаться reply.
 2. `"s3_bucket": "logs-bundles"`, `byte_size` > 0.
-3. MinIO Console http://localhost:9001 или UI **S3 Check**.
+3. MinIO Console http://localhost:9011 или UI **S3 Check**.
 
 ```powershell
 bin\mock-core -scenario 04-logs-collect-s3
@@ -973,7 +1019,7 @@ POLICY_FILE=deploy/base/policy/policy.yaml \
 POLICY_NAMESPACES_FILE=deploy/base/policy/namespaces.yaml \
 FEATURES_FILE=deploy/base/policy/features.yaml \
 KAFKA_BROKERS=localhost:9092 \
-S3_ENDPOINT=http://localhost:9000 \
+S3_ENDPOINT=http://localhost:9010 \
 S3_FORCE_PATH_STYLE=true \
 go run ./cmd/agent --dev-no-leader-election
 ```
@@ -1005,11 +1051,16 @@ go run ./cmd/agent --dev-no-leader-election
 
 | Переменная | Default | Описание |
 | --- | --- | --- |
-| `FIXTURES_DIR` | `test/fixtures` | шаблоны команд |
+| `FIXTURES_DIR` | `test/fixtures` | шаблоны Commands |
 | `FEATURES_DIR` | `deploy/base/policy` | пресеты Full / Observability |
-| `KUBECONFIG` | — | доступ к kind для **Agent Mode** |
+| `KUBECONFIG` | — | доступ к kind для **Agent Mode** / Cluster |
 | `AGENT_NAMESPACE` | `uamc-agent` | namespace агента |
 | `AGENT_CONFIGMAP` | `k8s-agent-policy` | ConfigMap policy + features |
+| `AGENT_HTTP_URL` | `http://host.docker.internal:8080` | base URL REST агента (Scenarios REST/flows) |
+| `AGENT_HTTP_BEARER` / `HTTP_BEARER_TOKEN` | — | Bearer для `/v1/cache`, `/metrics` при необходимости |
+| `S3_ENDPOINT` | `http://localhost:9010` | MinIO API |
+| `MINIO_CONSOLE_URL` | `http://localhost:9011` | ссылки Open in Console |
+| `S3_FORCE_PATH_STYLE` | `true` | path-style для MinIO |
 
 Полный список agent env — `internal/config/config.go`.
 
@@ -1240,11 +1291,11 @@ make dev-up
 
 | # | Действие | Ожидание |
 | --- | --- | --- |
-| 1 | http://localhost:8090 → **Agent Mode** | Current mode: **Full**, K8s available |
-| 2 | **Commands** → `k8s-api-list-namespaces` → **Send** | `"status": "completed"`, NS в теле |
-| 3 | **Commands** → `k8s-api-list-pods` → **Send** | `logger-a`, `logger-b` |
+| 1 | http://localhost:8090 → **Scenarios** → `ui-list-namespaces` → **Run** | Kafka reply `"status": "completed"` |
+| 2 | **Scenarios** → `ui-list-pods` → **Run** | в теле `logger-a`, `logger-b` |
+| 3 | **Scenarios** → `rest-healthz` → **Run** | HTTP 200 (нужен port-forward: `hack/port-forward-agent-http.ps1`) |
 | 4 | **Agent Mode** → Observability → **Apply** → `cache-put` | rejected (cache off) |
-| 5 | **Agent Mode** → Full → **Apply** → `cache-put` | `"status": "completed"` |
+| 5 | **Agent Mode** → Full → **Apply** → `flow-cache-put-get` | Kafka completed + REST cache |
 
 Автопрогон E2E (опционально):
 
@@ -1303,7 +1354,7 @@ kubectl get pods -n test-namespace-1 -l app=test
 
 1. http://localhost:8090 → **Agent Mode** (K8s available)
 2. **Commands** → `k8s-api-list-deployments` → **Send command**
-3. **Responses** → `"status": "completed"`
+3. **Kafka Monitor** → `"status": "completed"`
 
 Linux / macOS — те же шаги; `hack/kafka-init.sh`, `bin/mock-core`.
 

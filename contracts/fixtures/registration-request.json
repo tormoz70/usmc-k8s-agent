@@ -1,0 +1,21 @@
+{
+  "headers": {
+    "messageId": "msg-1",
+    "correlationId": "corr-1",
+    "topic": "uamc-agent.ssl.request",
+    "topicForResponse": "uamc-agent.ssl.response.local-uamc-agent",
+    "direction": "REQUEST",
+    "addressee": "uamc-core",
+    "sender": "local",
+    "messageType": "AgentRegistrationRequest",
+    "requestType": "REGISTER",
+    "timestamp": "2026-07-23T00:00:00Z",
+    "zipped": "false"
+  },
+  "body": {
+    "cluster_id": "local",
+    "agent_instance_id": "agent-1",
+    "cluster_name": "local",
+    "modules": ["api", "watch", "logs"]
+  }
+}

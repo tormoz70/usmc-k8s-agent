@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package uamc.agent.ottlogstrue;
+
+option go_package = "github.com/usmc/usmc-k8s-agent/api/gen/ottlogstrue";
+
+message OttLogTrueConfigRequest {
+  string cluster_id = 1;
+}
+
+message OttLogTrueConfigResponse {
+  repeated string namespaces_of_cluster = 1;
+  int64 scan_period = 2;
+  string sidecar_mask = 3;
+  string reply_topic_events = 4;
+  int64 healthcheck_period = 5;
+  int64 scan_period_from_start_pod_seconds = 6;
+  int64 resync_ms = 7;
+  string check_logger_name_regex = 8;
+}
+
+message OttLogTrueSidecarEvent {
+  string request_result = 1;
+  string request_path = 2;
+  string request_method = 3;
+  string module_id_provider = 4;
+  string module_id_consumer = 5;
+  string host = 6;
+  bool healthcheck_record = 7;
+  int64 received = 8;
+  string deployment_unit_kind = 9;
+  string deployment_unit_name = 10;
+  string namespace = 11;
+  string pod_name = 12;
+  string sidecar_name = 13;
+}
+
+message OttLogTrueSidecarBucket {
+  repeated OttLogTrueSidecarEvent events = 1;
+  string namespace = 2;
+  string pod_name = 3;
+  string sidecar_name = 4;
+}

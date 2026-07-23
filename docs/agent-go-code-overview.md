@@ -253,10 +253,11 @@ Runtime-флаги (leader, kafka, apiserver) и Prometheus-метрики.
 
 ## Что не входит в «код агента», но рядом
 
-- **`hack/mock-core-ui`**, **`hack/mock-core`** — имитация core для локальных тестов.
+- **`hack/mock-core-ui`**, **`hack/mock-core`** — имитация UI/core для локальных тестов (core = чёрный ящик).  
+  UI: вкладка **Scenarios** (`/api/scenarios`, `/api/scenarios/run`) — stubs Kafka / S3 / REST; см. [`local-test-contour.md`](./local-test-contour.md) §5.
 - **`deploy/`** — манифесты, RBAC, policy YAML.
 - **`docs/`** — архитектура (`architecture-core-client-k8s-agent.md` и др.).
-- **`k8s-agent/`** — старый/альтернативный дерево исходников; ориентир для текущего кода — корневой `internal/`.
+- **`k8s-agent/`** — **archived** альтернативное дерево; текущий код — корневой `cmd/agent` + `internal/`.
 
 ---
 

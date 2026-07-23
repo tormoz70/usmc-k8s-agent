@@ -23,11 +23,11 @@ const (
 
 // Publisher writes lifecycle events to Kafka.
 type Publisher struct {
-	publish func(ctx context.Context, topic string, key string, value []byte) error
+	publish func(ctx context.Context, topic, key string, headers map[string]string, value []byte) error
 	topic   string
 }
 
-func NewPublisher(topic string, publish func(ctx context.Context, topic string, key string, value []byte) error) *Publisher {
+func NewPublisher(topic string, publish func(ctx context.Context, topic, key string, headers map[string]string, value []byte) error) *Publisher {
 	return &Publisher{topic: topic, publish: publish}
 }
 
@@ -55,5 +55,5 @@ func (p *Publisher) publishEvent(ctx context.Context, eventType, clusterID, inst
 	if err != nil {
 		return err
 	}
-	return p.publish(ctx, p.topic, clusterID, body)
+	return p.publish(ctx, p.topic, clusterID, nil, body)
 }

@@ -81,13 +81,17 @@ func (p *Publisher) PublishEvent(ctx context.Context, topic, key string, event a
 	})
 }
 
-// PublishRaw sends a message to an arbitrary topic (lifecycle, events, etc.).
-func (p *Publisher) PublishRaw(ctx context.Context, topic, key string, value []byte) error {
-	return p.writer.WriteMessages(ctx, kafkago.Message{
+// PublishRaw sends a message to an arbitrary topic (lifecycle, protobuf, events, etc.).
+func (p *Publisher) PublishRaw(ctx context.Context, topic, key string, headers map[string]string, value []byte) error {
+	msg := kafkago.Message{
 		Topic: topic,
 		Key:   []byte(key),
 		Value: value,
-	})
+	}
+	for k, v := range headers {
+		msg.Headers = append(msg.Headers, kafkago.Header{Key: k, Value: []byte(v)})
+	}
+	return p.writer.WriteMessages(ctx, msg)
 }
 
 // Consumer reads commands from the request topic.
@@ -108,17 +112,23 @@ func NewConsumer(cfg config.KafkaConfig, log *slog.Logger) (*Consumer, error) {
 	if err != nil {
 		return nil, err
 	}
+	group := cfg.ConsumerGroup
+	if cfg.ShadowConsumerGroup != "" {
+		group = cfg.ShadowConsumerGroup
+	}
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        cfg.Brokers,
-		GroupID:        cfg.ConsumerGroup,
+		GroupID:        group,
 		Topic:          cfg.RequestTopic,
 		MinBytes:       1,
 		MaxBytes:       10 << 20,
 		CommitInterval: 0,
+		StartOffset:    kafkago.LastOffset,
 		Dialer:         d,
+		MaxWait:        time.Second,
 	})
 	if cfg.ClientPrincipal != "" {
-		log.Info("kafka consumer configured", "security_mode", ResolveSecurityMode(cfg), "client_principal", cfg.ClientPrincipal)
+		log.Info("kafka consumer configured", "security_mode", ResolveSecurityMode(cfg), "client_principal", cfg.ClientPrincipal, "group", group, "topic", cfg.RequestTopic)
 	} else if mode := ResolveSecurityMode(cfg); mode == SecurityMTLS {
 		log.Info("kafka consumer configured", "security_mode", mode, "note", "set KAFKA_TLS_CLIENT_PRINCIPAL to match Kafka ACL principal (usually certificate CN)")
 	}

@@ -163,8 +163,8 @@ flowchart TB
     subgraph host ["Хост (Docker Desktop)"]
         subgraph compose ["docker compose"]
             Redpanda["Redpanda\nKafka :9092"]
-            MinIO["MinIO\nS3 :9000"]
-            MockUI["mock-core UI :8090\nHTTP + SSE"]
+            MinIO["MinIO\nS3 :9010"]
+            MockUI["mock-core UI :8090\nScenarios / Kafka / S3 / REST"]
             KafkaUI["Kafka UI :8088"]
         end
         MockCLI["mock-core CLI\n(optional)"]
@@ -340,7 +340,8 @@ sequenceDiagram
 | core-client | Kafka | Kafka binary | `:9092` | mTLS / SASL | PLAINTEXT |
 | mock-core UI | Kafka | Kafka binary | `localhost:9092` | — | PLAINTEXT |
 | mock-core UI | Browser | HTTP/1.1, SSE | `:8090` | — | — |
-| mock-core UI | MinIO | S3 HeadObject | `:9000` | — | `minioadmin` |
+| mock-core UI | MinIO | S3 HeadObject | `:9010` | — | `minioadmin` |
+| mock-core UI | Agent HTTP | REST GET | `AGENT_HTTP_URL` (`:8080`) | Bearer optional | healthz / cache |
 | **egress** | Kafka | consume / produce | broker | mTLS | PLAINTEXT via `host.docker.internal` |
 | **egress** | **agent-service** | HTTP POST JSON | `agent-service-http:8081/internal/v1/commands` | Bearer `HTTP_INTERNAL_BEARER_TOKEN` | Secret `k8s-agent-internal-token` |
 | **ingress** | **agent-service** | HTTP reverse proxy | `:8080` → `:8081` | — (paths only) | same |
@@ -398,8 +399,8 @@ stateDiagram-v2
 | Production | Local dev | Протокол |
 | --- | --- | --- |
 | Managed Kafka | Redpanda | Kafka PLAINTEXT `:9092` |
-| AWS S3 | MinIO | S3 HTTP `:9000` |
-| Java core-client | mock-core UI / CLI | Kafka + HTTP UI |
+| AWS S3 | MinIO | S3 HTTP `:9010` |
+| Java core-client | mock-core UI / CLI (чёрный ящик) | Kafka + HTTP UI + REST probe |
 | mTLS Kafka | не используется | — |
 | EKS / prod K8s | kind cluster | HTTPS apiserver |
 | 3× Deployment | ingress + egress + agent-service | `AGENT_COMPONENT` env |

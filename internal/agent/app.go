@@ -9,6 +9,7 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/cache"
 	"github.com/usmc/usmc-k8s-agent/internal/command"
 	"github.com/usmc/usmc-k8s-agent/internal/config"
+	"github.com/usmc/usmc-k8s-agent/internal/coreclient"
 	"github.com/usmc/usmc-k8s-agent/internal/features"
 	apihandler "github.com/usmc/usmc-k8s-agent/internal/handlers/api"
 	cachehandler "github.com/usmc/usmc-k8s-agent/internal/handlers/cache"
@@ -22,10 +23,21 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/kafka"
 	"github.com/usmc/usmc-k8s-agent/internal/leaderelection"
 	"github.com/usmc/usmc-k8s-agent/internal/logstream"
+	"github.com/usmc/usmc-k8s-agent/internal/modules"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/ailogs"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/cmdmods"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/eventswatcher"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/kubeapi"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/loglevel"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/metricswatcher"
+	"github.com/usmc/usmc-k8s-agent/internal/modules/ottlogstrue"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 	"github.com/usmc/usmc-k8s-agent/internal/policy"
+	"github.com/usmc/usmc-k8s-agent/internal/protodispatch"
+	"github.com/usmc/usmc-k8s-agent/internal/registration"
 	s3client "github.com/usmc/usmc-k8s-agent/internal/s3"
 	"github.com/usmc/usmc-k8s-agent/internal/watch"
+	"time"
 )
 
 // App wires all agent modules.
@@ -36,6 +48,8 @@ type App struct {
 	metrics      *observability.Metrics
 	k8sClient    *k8s.Client
 	policy       *policy.Engine
+	featReg      *features.Registry
+	modReg       *modules.Registry
 	cacheStore   *cache.Store
 	watchMgr     *watch.Manager
 	streamMgr    *logstream.Manager
@@ -47,6 +61,8 @@ type App struct {
 	commandGuard *kafka.CommandGuard
 	http         *httpapi.Server
 	podNamespace string
+	coreClient   *coreclient.Client
+	protoDispatch *protodispatch.Dispatcher
 }
 
 // Options customizes application wiring.
@@ -124,9 +140,6 @@ func New(opts Options) (*App, error) {
 		tempRoot,
 	)
 
-	// Kafka consumer joins a consumer group. Only the leader may FetchMessage, so we create
-	// the consumer lazily in commandLoop (not here). Creating it for every replica — including
-	// agent-service / standby egress — assigns the partition to a pod that never reads → stuck lag.
 	publisher, err := kafka.NewPublisher(opts.Config.Kafka, log)
 	if err != nil {
 		return nil, fmt.Errorf("kafka publisher: %w", err)
@@ -166,40 +179,62 @@ func New(opts Options) (*App, error) {
 	logsHandler := loghandler.NewHandler(collector, engine, publisher, opts.Config.Agent.LogsCollectMaxJobs, log)
 	logsHandler.SetMetrics(metrics)
 
-	var handlers []command.Handler
-	if featReg.CommandEnabled(command.TypeK8sAPI) {
-		handlers = append(handlers, apihandler.NewHandler(k8sClient, engine, k8s.DefaultTrimOptions()))
-	}
-	if featReg.CommandEnabled(command.TypeLogsCollect) {
-		handlers = append(handlers, logsHandler)
-	}
-	if featReg.CommandEnabled(command.TypeWatchSubscribe) {
-		handlers = append(handlers, watchhandler.NewSubscribeHandler(watchMgr, opts.Config.Kafka.EventsTopic))
-	}
-	if featReg.CommandEnabled(command.TypeWatchUnsubscribe) {
-		handlers = append(handlers, watchhandler.NewUnsubscribeHandler(watchMgr))
-	}
-	if featReg.CommandEnabled(command.TypeCachePut) {
-		handlers = append(handlers, cachehandler.NewPutHandler(cacheStore, engine, metrics))
-	}
-	if featReg.CommandEnabled(command.TypeCacheDelete) {
-		handlers = append(handlers, cachehandler.NewDeleteHandler(cacheStore, engine, metrics))
-	}
-	if featReg.CommandEnabled(command.TypeCacheClear) {
-		handlers = append(handlers, cachehandler.NewClearHandler(cacheStore, engine, metrics))
-	}
-	if featReg.CommandEnabled(command.TypeLogsStreamStart) {
-		handlers = append(handlers, logstreamhandler.NewStartHandler(streamMgr, opts.Config.Kafka.LogsStreamTopic))
-	}
-	if featReg.CommandEnabled(command.TypeLogsStreamStop) {
-		handlers = append(handlers, logstreamhandler.NewStopHandler(streamMgr))
-	}
-	if featReg.CommandEnabled(command.TypeHealthReportStart) {
-		handlers = append(handlers, healthhandler.NewStartHandler(healthMgr, opts.Config.Kafka.HealthTopic))
-	}
-	if featReg.CommandEnabled(command.TypeHealthReportStop) {
-		handlers = append(handlers, healthhandler.NewStopHandler(healthMgr))
-	}
+	apiMod := cmdmods.NewHandlerModule("api",
+		[]string{"cluster_inventory", "workload_manage", "istio_manage", "rbac_inspect"},
+		[]string{command.TypeK8sAPI},
+		apihandler.NewHandler(k8sClient, engine, k8s.DefaultTrimOptions()),
+	)
+	logsMod := cmdmods.NewHandlerModule("logs",
+		[]string{"logs_collect"},
+		[]string{command.TypeLogsCollect},
+		logsHandler,
+	)
+	watchMod := cmdmods.NewHandlerModule("watch",
+		[]string{"watch_events"},
+		[]string{command.TypeWatchSubscribe, command.TypeWatchUnsubscribe},
+		watchhandler.NewSubscribeHandler(watchMgr, opts.Config.Kafka.EventsTopic),
+		watchhandler.NewUnsubscribeHandler(watchMgr),
+	)
+	cacheMod := cmdmods.NewHandlerModule("cache",
+		[]string{"cache"},
+		[]string{command.TypeCachePut, command.TypeCacheDelete, command.TypeCacheClear},
+		cachehandler.NewPutHandler(cacheStore, engine, metrics),
+		cachehandler.NewDeleteHandler(cacheStore, engine, metrics),
+		cachehandler.NewClearHandler(cacheStore, engine, metrics),
+	)
+	logstreamMod := cmdmods.NewHandlerModule("logstream",
+		[]string{"logs_stream"},
+		[]string{command.TypeLogsStreamStart, command.TypeLogsStreamStop},
+		logstreamhandler.NewStartHandler(streamMgr, opts.Config.Kafka.LogsStreamTopic),
+		logstreamhandler.NewStopHandler(streamMgr),
+	)
+	healthMod := cmdmods.NewHandlerModule("health",
+		[]string{"health_report"},
+		[]string{command.TypeHealthReportStart, command.TypeHealthReportStop},
+		healthhandler.NewStartHandler(healthMgr, opts.Config.Kafka.HealthTopic),
+		healthhandler.NewStopHandler(healthMgr),
+	)
+
+	modReg := modules.NewRegistry(log, apiMod, logsMod, watchMod, cacheMod, logstreamMod, healthMod)
+
+	coreClient := coreclient.New(
+		publisher,
+		opts.Config.ClusterID,
+		opts.Config.Kafka.OutRequestTopic,
+		time.Duration(opts.Config.Kafka.ResponseTimeoutMs)*time.Millisecond,
+		log,
+	)
+	protoDisp := protodispatch.New(log)
+	regMod := registration.New(opts.Config, coreClient, modReg.Names(), log)
+	modReg.Register(regMod)
+	modReg.Register(eventswatcher.NewBridge(opts.Config, coreClient, log))
+	modReg.Register(metricswatcher.New(opts.Config, coreClient, kube, log))
+	modReg.Register(loglevel.New(opts.Config, protoDisp, log))
+	modReg.Register(kubeapi.New(opts.Config, k8sClient.RestConfig(), envOrDefault("KUBEAPI_LISTEN_ADDR", ":8082"), log))
+	modReg.Register(ailogs.New(logsHandler, log))
+	modReg.Register(ottlogstrue.New(opts.Config, coreClient, log))
+
+	handlers := cmdmods.FilterHandlers(featReg, modReg.Handlers(opts.Config, featReg))
 	router := command.NewRouter(handlers...)
 
 	commandGuard := kafka.NewCommandGuard(engine)
@@ -212,26 +247,36 @@ func New(opts Options) (*App, error) {
 	httpServer := httpapi.NewServer(opts.Config.HTTP, state, cacheStore, log, httpRouter)
 
 	return &App{
-		cfg:          opts.Config,
-		log:          log,
-		state:        state,
-		metrics:      metrics,
-		k8sClient:    k8sClient,
-		policy:       engine,
-		cacheStore:   cacheStore,
-		watchMgr:     watchMgr,
-		streamMgr:    streamMgr,
-		healthMgr:    healthMgr,
-		router:       router,
-		publisher:    publisher,
-		commandGuard: commandGuard,
-		http:         httpServer,
-		podNamespace: envOrDefault("POD_NAMESPACE", "uamc-agent"),
+		cfg:           opts.Config,
+		log:           log,
+		state:         state,
+		metrics:       metrics,
+		k8sClient:     k8sClient,
+		policy:        engine,
+		featReg:       featReg,
+		modReg:        modReg,
+		cacheStore:    cacheStore,
+		watchMgr:      watchMgr,
+		streamMgr:     streamMgr,
+		healthMgr:     healthMgr,
+		router:        router,
+		publisher:     publisher,
+		commandGuard:  commandGuard,
+		http:          httpServer,
+		podNamespace:  envOrDefault("POD_NAMESPACE", "uamc-agent"),
+		coreClient:    coreClient,
+		protoDispatch: protoDisp,
 	}, nil
 }
 
 // Run starts the configured agent component.
 func (a *App) Run(ctx context.Context, devNoLeader bool) error {
+	if a.modReg != nil {
+		if err := a.modReg.Start(ctx, a.cfg, a.featReg); err != nil {
+			return err
+		}
+		defer func() { _ = a.modReg.Stop(context.Background()) }()
+	}
 	switch a.cfg.Agent.Component {
 	case config.ComponentIngress:
 		return a.runIngress(ctx)
@@ -292,6 +337,11 @@ func (a *App) shutdown(ctx context.Context) error {
 // Router exposes the command router for tests.
 func (a *App) Router() *command.Router {
 	return a.router
+}
+
+// Modules exposes the module registry for tests.
+func (a *App) Modules() *modules.Registry {
+	return a.modReg
 }
 
 func envOrDefault(key, fallback string) string {

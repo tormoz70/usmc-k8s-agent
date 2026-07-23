@@ -1,0 +1,1 @@
+Category=urn:oasis:names:tc:xacml:1.0:subject-category:access-subject Decision=Permit module_id: 'provider-svc' host: 'api.local' access-subject{[[consumer-svc]]} api:interface:resource{/v1/orders} names:http:method,POST

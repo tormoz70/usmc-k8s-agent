@@ -6,3 +6,5 @@
 *.out
 coverage.out
 /vendor/
+hack/.agent-http-pf.pid
+hack/.agent-http-pf.log

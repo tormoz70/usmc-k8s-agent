@@ -12,6 +12,8 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/kafka"
 	"github.com/usmc/usmc-k8s-agent/internal/leaderelection"
 	"github.com/usmc/usmc-k8s-agent/internal/lifecycle"
+	"github.com/usmc/usmc-k8s-agent/internal/protodispatch"
+	"github.com/usmc/usmc-k8s-agent/internal/transport"
 )
 
 func (a *App) runAll(ctx context.Context, devNoLeader bool) error {
@@ -129,50 +131,101 @@ func (a *App) commandLoop() func(context.Context) {
 		}
 
 		// Join the Kafka consumer group only while leading. Standby replicas must not hold partitions.
-		consumer, err := kafka.NewConsumer(a.cfg.Kafka, a.log)
-		if err != nil {
-			a.log.Error("kafka consumer create failed", "error", err)
-			return
-		}
-		a.consumer = consumer
-		defer func() {
+		// Retry on broker disconnect so a transient Kafka outage does not leave egress "Running" but idle.
+		backoff := time.Second
+		const maxBackoff = 30 * time.Second
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			kcfg := a.cfg.Kafka
+			kcfg.RequestTopic = transport.RequestTopicForMode(kcfg, a.cfg.ClusterID)
+			consumer, err := kafka.NewConsumer(kcfg, a.log)
+			if err != nil {
+				a.log.Error("kafka consumer create failed", "error", err, "retry_in", backoff.String())
+				if !sleepCtx(ctx, backoff) {
+					return
+				}
+				backoff = nextBackoff(backoff, maxBackoff)
+				continue
+			}
+			a.consumer = consumer
+
+			var executor kafka.CommandExecutor = a.router
+			if a.cfg.Agent.Component == config.ComponentEgress {
+				executor = bridge.NewRemoteExecutor(a.cfg.Agent.AgentServiceURL, a.cfg.HTTP.InternalBearerToken)
+			}
+			a.processor = kafka.NewProcessor(
+				consumer,
+				a.publisher,
+				executor,
+				a.commandGuard,
+				a.cfg.Kafka.CommitOnReceive,
+				a.metrics,
+				a.log,
+			)
+
+			mode := transport.DetectModeFromConfig(a.cfg.Kafka)
+			if mode != transport.ModeJSON {
+				var protoDisp transport.ProtoDispatcher
+				if a.protoDispatch != nil {
+					protoDisp = a.protoDispatch
+				} else {
+					protoDisp = protodispatch.New(a.log)
+				}
+				dual := transport.NewDualAdapter(mode, executor, protoDisp, a.coreClient, a.log)
+				a.processor.SetDualAdapter(dual)
+			}
+
+			lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
+			if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
+				a.log.Warn("publish agent.lifecycle failed", "error", err)
+			}
+
+			a.log.Info("command processor started", "topic", kcfg.RequestTopic, "kafka_mode", mode)
+			runErr := a.processor.Run(ctx)
 			_ = consumer.Close()
 			if a.consumer == consumer {
 				a.consumer = nil
 			}
-		}()
-
-		var executor kafka.CommandExecutor = a.router
-		if a.cfg.Agent.Component == config.ComponentEgress {
-			executor = bridge.NewRemoteExecutor(a.cfg.Agent.AgentServiceURL, a.cfg.HTTP.InternalBearerToken)
-		}
-		a.processor = kafka.NewProcessor(
-			consumer,
-			a.publisher,
-			executor,
-			a.commandGuard,
-			a.cfg.Kafka.CommitOnReceive,
-			a.metrics,
-			a.log,
-		)
-
-		lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
-		if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
-			a.log.Warn("publish agent.lifecycle failed", "error", err)
-		}
-		defer func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID); err != nil {
 				a.log.Warn("publish agent.lifecycle leader lost failed", "error", err)
 			}
-		}()
+			cancel()
 
-		a.log.Info("command processor started", "topic", a.cfg.Kafka.RequestTopic)
-		if err := a.processor.Run(ctx); err != nil && ctx.Err() == nil {
-			a.log.Error("command processor stopped", "error", err)
+			if ctx.Err() != nil {
+				return
+			}
+			a.log.Error("command processor stopped", "error", runErr, "retry_in", backoff.String())
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff, maxBackoff)
 		}
 	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func nextBackoff(cur, max time.Duration) time.Duration {
+	next := cur * 2
+	if next > max {
+		return max
+	}
+	if next < cur {
+		return max
+	}
+	return next
 }
 
 func (a *App) runWithLeaderElection(ctx context.Context, devNoLeader bool, leaseName string, fn func(context.Context)) error {

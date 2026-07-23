@@ -27,6 +27,8 @@ type config struct {
 	AgentNamespace   string
 	AgentConfigMap   string
 	AgentDeployments []string
+	AgentHTTPURL     string
+	AgentHTTPBearer  string
 	S3Endpoint       string
 	S3Region         string
 	S3AccessKey      string
@@ -46,11 +48,13 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", env("KUBECONFIG", ""), "kubeconfig for agent mode switching")
 	agentNamespace := flag.String("agent-namespace", env("AGENT_NAMESPACE", "uamc-agent"), "agent namespace")
 	agentConfigMap := flag.String("agent-configmap", env("AGENT_CONFIGMAP", "k8s-agent-policy"), "policy configmap name")
-	s3Endpoint := flag.String("s3-endpoint", env("S3_ENDPOINT", "http://localhost:9000"), "S3 endpoint")
+	s3Endpoint := flag.String("s3-endpoint", env("S3_ENDPOINT", "http://localhost:9010"), "S3 endpoint")
 	s3Region := flag.String("s3-region", env("S3_REGION", "us-east-1"), "S3 region")
 	s3AccessKey := flag.String("s3-access-key", env("S3_ACCESS_KEY", "minioadmin"), "S3 access key")
 	s3SecretKey := flag.String("s3-secret-key", env("S3_SECRET_KEY", "minioadmin"), "S3 secret key")
-	minioConsole := flag.String("minio-console", env("MINIO_CONSOLE_URL", "http://localhost:9001"), "MinIO console URL for links")
+	minioConsole := flag.String("minio-console", env("MINIO_CONSOLE_URL", "http://localhost:9011"), "MinIO console URL for links")
+	agentHTTP := flag.String("agent-http", env("AGENT_HTTP_URL", "http://host.docker.internal:8080"), "k8s-agent public HTTP base URL")
+	agentBearer := flag.String("agent-http-bearer", env("AGENT_HTTP_BEARER", env("HTTP_BEARER_TOKEN", "")), "Bearer for agent HTTP (cache/metrics)")
 	flag.Parse()
 
 	cfg := config{
@@ -64,6 +68,8 @@ func main() {
 		AgentNamespace: *agentNamespace,
 		AgentConfigMap: *agentConfigMap,
 		AgentDeployments: []string{"agent-service", "egress"},
+		AgentHTTPURL:    *agentHTTP,
+		AgentHTTPBearer: *agentBearer,
 		S3Endpoint:     *s3Endpoint,
 		S3Region:     *s3Region,
 		S3AccessKey:  *s3AccessKey,
@@ -86,6 +92,9 @@ func main() {
 	mux.HandleFunc("/api/templates", srv.handleTemplates)
 	mux.HandleFunc("/api/topics", srv.handleTopics)
 	mux.HandleFunc("/api/commands", srv.handleCommands)
+	mux.HandleFunc("/api/scenarios", srv.handleScenarios)
+	mux.HandleFunc("/api/scenarios/run", srv.handleScenarioRun)
+	mux.HandleFunc("/api/agent/rest", srv.handleAgentRESTProbe)
 	mux.HandleFunc("/api/messages/stream", srv.handleMessageStream)
 	mux.HandleFunc("/api/messages/history", srv.handleMessageHistory)
 	mux.HandleFunc("/api/s3/head", srv.handleS3Head)

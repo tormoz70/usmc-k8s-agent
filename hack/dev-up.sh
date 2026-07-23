@@ -44,20 +44,20 @@ require_command kind
 require_command kubectl
 
 echo
-echo "[1/4] Starting docker compose (Kafka, MinIO, mock-core UI)..."
+echo "[1/5] Starting docker compose (Kafka, MinIO, mock-core UI)..."
 docker compose up -d --build
 
 echo
-echo "[2/4] Waiting for infra..."
+echo "[2/5] Waiting for infra..."
 wait_tcp_port localhost 9092
-wait_tcp_port localhost 9000
+wait_tcp_port localhost 9010
 wait_http_ok "http://localhost:8090/api/health"
 echo "Ensuring Kafka topics..."
 hack/kafka-init.sh || true
 echo "Infra is ready."
 
 echo
-echo "[3/4] Bootstrapping kind cluster and deploying agent..."
+echo "[3/5] Bootstrapping kind cluster and deploying agent..."
 hack/bootstrap.sh
 
 echo "Waiting for uamc-agent rollouts..."
@@ -66,16 +66,25 @@ kubectl rollout status deployment/egress -n uamc-agent --timeout=120s
 kubectl rollout status deployment/agent-service -n uamc-agent --timeout=120s
 
 echo
-echo "[4/4] Seeding test cluster data..."
+echo "[4/5] Seeding test cluster data..."
 hack/seed-test-data.sh
+
+echo
+echo "[5/5] Exposing agent HTTP on localhost:8080 (for mock-core-ui REST scenarios)..."
+chmod +x hack/port-forward-agent-http.sh
+if ! hack/port-forward-agent-http.sh; then
+  echo "WARN: port-forward failed — Kafka scenarios still work; REST needs: hack/port-forward-agent-http.sh" >&2
+fi
 
 echo
 echo "=== Environment ready ==="
 echo "  mock-core UI:  http://localhost:8090"
 echo "  Kafka UI:      http://localhost:8088"
-echo "  MinIO Console: http://localhost:9001"
+echo "  MinIO Console: http://localhost:9011"
+echo "  Agent HTTP:    http://localhost:8080/healthz  (port-forward)"
 echo
 echo "  kubectl get pods -A -l app.kubernetes.io/part-of=test-data"
 echo "  kubectl logs -n test-namespace-1 logger-a -f"
 echo
-echo "Smoke test: mock-core UI -> k8s-api-list-pods -> Send command"
+echo "Smoke test: http://localhost:8090 -> Scenarios -> ui-list-pods -> Run"
+echo "REST smoke:  http://localhost:8090 -> Scenarios -> rest-healthz -> Run"

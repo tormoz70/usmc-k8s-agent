@@ -1,85 +1,47 @@
 # usmc-k8s-agent
 
-Kubernetes Kafka Agent — in-cluster Go service for executing cluster operations via Kafka.
+In-cluster Go Kubernetes agent: Kafka commands → kube-apiserver / Istio API, with modular packages and dual-stack JSON + protobuf transport for uamc-core compatibility.
 
 ## Documentation
 
-- Architecture: [docs/k8s-agent-architecture-nup.md](docs/k8s-agent-architecture-nup.md)
-- Implementation plan: [todo_agent.md](todo_agent.md)
+- Code overview: [docs/agent-go-code-overview.md](docs/agent-go-code-overview.md)
+- Local test contour: [docs/local-test-contour.md](docs/local-test-contour.md) (Scenarios, MinIO `:9010`, `AGENT_HTTP_URL`)
+- Architecture: [docs/architecture-core-client-k8s-agent.md](docs/architecture-core-client-k8s-agent.md)
+- MVP decisions: [docs/mvp-plan.md](docs/mvp-plan.md)
 
-## Agent (Go)
+> **Note:** Nested [`k8s-agent/`](k8s-agent/) is **archived** (alternate NUP contract). Use the **root** module (`cmd/agent` + `internal/`).
 
-Source code: [k8s-agent/](k8s-agent/)
+## Build
 
-### Local dev (minikube + Kafka + MinIO)
-
-```powershell
-.\scripts\dev\setup.ps1
-.\scripts\dev\probe-resource-list.ps1
-```
-
-See [docs/dev-minikube.md](docs/dev-minikube.md).
-
-### Build only
-
-```powershell
-cd k8s-agent
+```bash
 go mod tidy
 go test ./...
-go build -o bin/k8s-agent.exe ./cmd/agent
+go build -o bin/k8s-agent ./cmd/agent
 ```
-In-cluster Kubernetes agent: Kafka commands → kube-apiserver / Istio API, with modular Go packages for parallel development.
 
-## Module layout
+## Module layout (root)
 
-| Package | Owner focus | Phase |
-| --- | --- | --- |
-| `internal/config` | configuration | 1 |
-| `internal/command` | envelope, router | 1 |
-| `internal/policy` | allow-list | 1 |
-| `internal/k8s` | apiserver client, trim | 1 |
-| `internal/handlers/api` | `k8s.api` proxy | 1 |
-| `internal/kafka` | consumer/producer | 1 |
-| `internal/leaderelection` | Lease leader | 1 |
-| `internal/httpapi` | health/metrics/cache HTTP | 1/4 |
-| `internal/handlers/logs` | logs.collect | 2 ✅ |
-| `internal/s3` | S3 upload | 2 |
-| `internal/watch` | watch.subscribe → cluster.events | 3 ✅ |
-| `internal/lifecycle` | agent.lifecycle | 3 ✅ (publish on leader start) |
-| `internal/cache` + `handlers/cache` | cache.put + GET | 4 |
-| `internal/handlers/health` | health.report | 4 |
-
-Go module: `github.com/usmc/usmc-k8s-agent` (change via `go mod edit -module=...`).
+| Package | Role |
+| --- | --- |
+| `internal/modules` | Module registry (Spring-profile analogue) |
+| `internal/config` | Env configuration (`KAFKA_MODE`, topics, …) |
+| `internal/command` | JSON envelope + router |
+| `internal/policy` + `internal/features` | Allow-list / capability flags |
+| `internal/handlers/*` | `k8s.api`, logs, watch, cache, health |
+| `internal/kafka` + `internal/transport` | Kafka I/O + transport abstractions |
+| `internal/coreclient` / `internal/protoheaders` | uamc-core protobuf request/response |
+| `internal/batcher` / `internal/keyedlock` | Shared concurrency helpers |
 
 ## Local dev
 
-Подробная инструкция по локальному тестовому контуру (включая проверку окружения на Windows): **[docs/local-test-contour.md](docs/local-test-contour.md)**.
-
 ```bash
-# Full local test environment (one command)
 make dev-up
-# Smoke: http://localhost:8090 → k8s-api-list-deployments → Send command
+# Smoke: http://localhost:8090 → Scenarios → ui-list-deployments → Run
 
-# Or step by step:
-# Kafka + MinIO + mock-core UI
+# Or:
 docker compose up -d
-
-# Build & test
 make tidy test build
-
-# Agent in kind only
 make kind-up
-```
-
-### mock-core (Kafka CLI)
-
-```bash
-make mock-core
-bin/mock-core -file test/fixtures/k8s-api-list-deployments.json
-bin/mock-core -file test/fixtures/logs-collect.json
-bin/mock-core -file test/fixtures/watch-subscribe-pods.json
-bin/mock-core -listen -reply-topic core-client.dev.responses
-# separate terminal: listen cluster.events with a dedicated consumer group
 ```
 
 ### Agent locally (kubeconfig, no leader election)
@@ -87,11 +49,14 @@ bin/mock-core -listen -reply-topic core-client.dev.responses
 ```bash
 POLICY_FILE=deploy/base/policy/policy.yaml \
 POLICY_NAMESPACES_FILE=deploy/base/policy/namespaces.yaml \
+FEATURES_FILE=deploy/base/policy/features.yaml \
 KAFKA_BROKERS=localhost:9092 \
-S3_ENDPOINT=http://localhost:9000 \
+S3_ENDPOINT=http://localhost:9010 \
 S3_FORCE_PATH_STYLE=true \
 go run ./cmd/agent --dev-no-leader-election
 ```
+
+Kafka wire format: `KAFKA_MODE=json` (default), `protobuf`, or `dual`.
 
 ## Architecture reference
 

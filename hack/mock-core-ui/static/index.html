@@ -284,7 +284,165 @@
       font-size: 0.875rem;
     }
     .check-row input { width: auto; }
-    main.wide { max-width: 1280px; }
+    main.wide { max-width: 1480px; }
+    .scenarios-split {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.15fr);
+      gap: 1rem;
+      align-items: start;
+      margin-top: 1rem;
+      min-height: calc(100vh - 220px);
+    }
+    @media (max-width: 960px) {
+      .scenarios-split { grid-template-columns: 1fr; min-height: 0; }
+    }
+    .scenarios-left {
+      min-width: 0;
+      max-height: calc(100vh - 220px);
+      overflow: auto;
+      padding-right: 0.25rem;
+    }
+    .scenarios-right {
+      position: sticky;
+      top: 1rem;
+      min-width: 0;
+      max-height: calc(100vh - 220px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: hidden;
+    }
+    .scenarios-right-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,0.15);
+    }
+    .scenarios-right-header h2 {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .scenarios-right-header .meta {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: right;
+    }
+    .scenarios-result-body {
+      flex: 1;
+      overflow: auto;
+      padding: 1rem;
+    }
+    .scenarios-result-body .empty {
+      color: var(--muted);
+      font-size: 0.875rem;
+      padding: 1.5rem 0.5rem;
+      text-align: center;
+    }
+    .result-block {
+      margin-bottom: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .result-block:last-child { margin-bottom: 0; }
+    .result-block-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      background: rgba(59, 130, 246, 0.06);
+    }
+    .result-block-title .tag {
+      color: var(--accent);
+      text-transform: none;
+      letter-spacing: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.7rem;
+    }
+    .result-block.is-response .result-block-title {
+      background: rgba(59, 130, 246, 0.1);
+    }
+    .result-block.is-result .result-block-title {
+      background: rgba(34, 197, 94, 0.1);
+    }
+    .result-block.is-result .result-block-title .tag.ok { color: var(--success); }
+    .result-block.is-result .result-block-title .tag.err { color: var(--error); }
+    .result-block.is-result .result-block-title .tag.warn { color: var(--warn); }
+    .live-events-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      max-height: 420px;
+      overflow: auto;
+      padding: 0.75rem;
+    }
+    .live-event {
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      background: var(--panel);
+      padding: 0.5rem 0.65rem;
+      font-size: 0.75rem;
+    }
+    .live-event-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .live-event-head .etype {
+      color: var(--accent);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .live-event pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.72rem;
+      max-height: 160px;
+      overflow: auto;
+    }
+    .result-block pre {
+      margin: 0;
+      padding: 0.75rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .result-hints {
+      margin: 0 0 1rem;
+      padding: 0.65rem 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      background: rgba(245, 158, 11, 0.08);
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .result-hints ul { margin: 0.35rem 0 0; padding-left: 1.1rem; }
+    .scenario-card.active-run {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+    }
     .topic-chips {
       display: flex;
       flex-wrap: wrap;
@@ -367,16 +525,49 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .scenario-group { margin-bottom: 1.5rem; }
+    .scenario-group h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    .scenario-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .scenario-card h3 { margin: 0; font-size: 0.9rem; }
+    .scenario-card p { margin: 0; font-size: 0.75rem; color: var(--muted); flex: 1; }
+    .scenario-card .channel {
+      font-size: 0.6875rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .scenario-card button { align-self: flex-start; }
   </style>
 </head>
 <body>
   <header>
     <h1>mock-core UI</h1>
-    <p>Local core-client simulator — send commands, monitor Kafka messages, inspect cluster, verify S3 uploads</p>
+    <p>Black-box core simulator — UI stubs → k8s-agent (Kafka / S3 / REST)</p>
   </header>
 
   <nav class="tabs">
-    <button class="tab active" data-tab="commands">Commands</button>
+    <button class="tab active" data-tab="scenarios">Scenarios</button>
+    <button class="tab" data-tab="commands">Commands</button>
     <button class="tab" data-tab="kafka">Kafka Monitor</button>
     <button class="tab" data-tab="cluster">Cluster</button>
     <button class="tab" data-tab="agent-mode">Agent Mode</button>
@@ -384,7 +575,36 @@
   </nav>
 
   <main class="wide">
-    <section id="panel-commands" class="panel active">
+    <section id="panel-scenarios" class="panel active">
+      <div class="mode-banner">
+        <strong>UI stubs</strong>
+        <p style="margin:0.5rem 0 0;color:var(--muted);font-size:0.875rem;">
+          Core — чёрный ящик. Слева — сценарии (Kafka / REST / S3), справа — Request / Response / Result.
+          После watch.subscribe события подписки стримятся в блок <strong>Live events</strong>.
+          Agent HTTP: <code id="agent-http-label">—</code>
+        </p>
+      </div>
+      <div class="scenarios-split">
+        <aside class="scenarios-left">
+          <div class="actions" style="margin-top:0;margin-bottom:0.75rem;">
+            <button class="secondary" id="scenarios-refresh-btn">Refresh list</button>
+            <span class="status" id="scenarios-status"></span>
+          </div>
+          <div id="scenarios-groups"></div>
+        </aside>
+        <aside class="scenarios-right">
+          <div class="scenarios-right-header">
+            <h2>Output</h2>
+            <div class="meta" id="scenario-result-meta">No run yet</div>
+          </div>
+          <div class="scenarios-result-body" id="scenario-result">
+            <div class="empty">Выберите сценарий слева и нажмите Run — справа появятся Request, Response и Result.</div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-commands" class="panel">
       <div class="row">
         <div>
           <label for="template">Template</label>
@@ -521,6 +741,9 @@
         }
         if (tab.dataset.tab === 'cluster') {
           loadClusterInventory().catch(err => console.error(err));
+        }
+        if (tab.dataset.tab === 'scenarios') {
+          loadScenarios().catch(err => console.error(err));
         }
       });
     });
@@ -1110,6 +1333,397 @@
         setStatus(document.getElementById('cluster-status'), e.message, 'err');
       });
     });
+
+    let scenarios = [];
+    let lastScenarioId = '';
+    let scenarioEventSource = null;
+    let scenarioLiveFilter = '';
+
+    function stopScenarioLive() {
+      if (scenarioEventSource) {
+        scenarioEventSource.close();
+        scenarioEventSource = null;
+      }
+      scenarioLiveFilter = '';
+    }
+
+    function isStreamWatchTopic(topic) {
+      return topic === 'cluster.events' || topic === 'logs.stream' || topic === 'cluster.health';
+    }
+
+    function appendLiveEvent(msg) {
+      const list = document.getElementById('scenario-live-events');
+      const countEl = document.getElementById('scenario-live-count');
+      if (!list) return;
+      let body = msg.body;
+      if (typeof body === 'string') {
+        try { body = JSON.parse(body); } catch (_) {}
+      }
+      if (scenarioLiveFilter) {
+        const sub = body && (body.subscription_id || body.SubscriptionID);
+        if (sub && sub !== scenarioLiveFilter) return;
+        if (!sub && typeof msg.body === 'string' && !msg.body.includes(scenarioLiveFilter)) return;
+      }
+      const empty = list.querySelector('.empty');
+      if (empty) empty.remove();
+
+      const evType = (body && (body.event_type || body.type)) || 'message';
+      const res = body && body.resource ? body.resource : null;
+      const resLabel = res
+        ? [res.kind, res.namespace, res.name].filter(Boolean).join('/')
+        : '';
+      const row = document.createElement('div');
+      row.className = 'live-event';
+      row.innerHTML = `
+        <div class="live-event-head">
+          <span class="etype">${escapeHtml(String(evType))}${resLabel ? ' · ' + escapeHtml(resLabel) : ''}</span>
+          <span>${escapeHtml(msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '')}</span>
+        </div>
+        <pre>${escapeHtml(prettyJSON(body != null ? body : msg))}</pre>`;
+      list.prepend(row);
+      while (list.querySelectorAll('.live-event').length > 100) {
+        list.lastElementChild.remove();
+      }
+      if (countEl) {
+        countEl.textContent = String(list.querySelectorAll('.live-event').length);
+      }
+    }
+
+    function startScenarioLive(topic, subscriptionID) {
+      stopScenarioLive();
+      if (!topic) return;
+      scenarioLiveFilter = subscriptionID || '';
+      const params = new URLSearchParams({ topic });
+      // Do NOT filter by command correlation_id — stream topics use subscription_id in body.
+      const es = new EventSource('/api/messages/stream?' + params.toString());
+      scenarioEventSource = es;
+      es.addEventListener('message', ev => {
+        try { appendLiveEvent(JSON.parse(ev.data)); } catch (_) {}
+      });
+      es.addEventListener('error', () => {
+        const meta = document.getElementById('scenario-live-status');
+        if (meta) meta.textContent = 'stream disconnected';
+      });
+      es.addEventListener('connected', () => {
+        const meta = document.getElementById('scenario-live-status');
+        if (meta) {
+          meta.textContent = subscriptionID
+            ? `live · ${topic} · sub=${subscriptionID}`
+            : `live · ${topic}`;
+        }
+      });
+    }
+
+    function prettyJSON(value) {
+      if (value == null) return '';
+      if (typeof value === 'string') {
+        try { return JSON.stringify(JSON.parse(value), null, 2); } catch (_) { return value; }
+      }
+      try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
+    }
+
+    function resultBlock(title, tag, body, extraClass) {
+      if (body == null || body === '') return '';
+      const content = typeof body === 'string' ? body : prettyJSON(body);
+      const cls = extraClass ? ` result-block ${extraClass}` : ' result-block';
+      return `<div class="${cls.trim()}">
+        <div class="result-block-title"><span>${escapeHtml(title)}</span>${tag ? `<span class="tag">${escapeHtml(tag)}</span>` : ''}</div>
+        <pre>${escapeHtml(content)}</pre>
+      </div>`;
+    }
+
+    function setScenarioResultMeta(text) {
+      document.getElementById('scenario-result-meta').textContent = text || '';
+    }
+
+    function markActiveScenario(id) {
+      lastScenarioId = id || '';
+      document.querySelectorAll('.scenario-card').forEach(card => {
+        const btn = card.querySelector('button[data-scenario]');
+        card.classList.toggle('active-run', !!(btn && btn.dataset.scenario === lastScenarioId));
+      });
+    }
+
+    function buildScenarioOutcome(data) {
+      const kr = data.kafka_result || {};
+      const reply = kr.reply || null;
+      const replyBody = reply && reply.body != null ? reply.body : (kr.body != null ? kr.body : null);
+      let status = 'ok';
+      let summary = 'completed';
+
+      if (kr.wait_error) {
+        status = 'err';
+        summary = 'kafka reply timeout';
+      } else if (data.rest && data.rest.status_code >= 400) {
+        status = 'err';
+        summary = `HTTP ${data.rest.status_code}`;
+      } else if (data.hints && data.hints.length) {
+        status = 'warn';
+        summary = 'completed with hints';
+      }
+
+      if (replyBody && typeof replyBody === 'object') {
+        const nestedStatus = replyBody.status || replyBody.result || replyBody.error;
+        if (typeof nestedStatus === 'string' && /fail|error|err/i.test(nestedStatus)) {
+          status = 'err';
+          summary = String(nestedStatus);
+        } else if (replyBody.error) {
+          status = 'err';
+          summary = typeof replyBody.error === 'string' ? replyBody.error : 'error in reply body';
+        }
+      }
+
+      const outcome = {
+        status,
+        summary,
+        scenario_id: data.scenario_id,
+        channel: data.channel,
+        correlation_id: data.correlation_id || null,
+        request_topic: kr.request_topic || (kr.request && kr.request.topic) || null,
+        reply_topic: data.reply_topic || kr.reply_topic || null,
+        watch_topic: data.watch_topic || null,
+      };
+      if (data.rest) {
+        outcome.rest_status = data.rest.status_code;
+        outcome.rest_url = data.rest.url;
+      }
+      if (data.s3) {
+        outcome.s3 = {
+          bucket: data.s3.bucket,
+          key: data.s3.key,
+          size: data.s3.size,
+          etag: data.s3.etag,
+          console_url: data.s3.console_url,
+        };
+      }
+      if (data.hints && data.hints.length) {
+        outcome.hints = data.hints;
+      }
+      if (replyBody != null) {
+        outcome.payload = replyBody;
+      } else if (data.rest && data.rest.body != null) {
+        let parsed = data.rest.body;
+        try { parsed = JSON.parse(data.rest.body); } catch (_) {}
+        outcome.payload = parsed;
+      }
+      return outcome;
+    }
+
+    function renderScenarioResult(data) {
+      const box = document.getElementById('scenario-result');
+      const parts = [];
+      const kr = data.kafka_result || {};
+      const req = kr.request || {};
+      const reply = kr.reply || null;
+      const outcome = buildScenarioOutcome(data);
+
+      // Request
+      if (data.channel === 'kafka' || data.channel === 'flow') {
+        parts.push(resultBlock(
+          'Request',
+          req.topic || kr.request_topic || '',
+          req.body != null ? req.body : { fixture: req.fixture, note: 'request body not available' }
+        ));
+      }
+      if (data.rest && (data.channel === 'rest' || data.channel === 'flow')) {
+        parts.push(resultBlock(
+          data.channel === 'flow' ? 'REST request' : 'Request',
+          `${data.rest.method || 'GET'} ${data.rest.url || ''}`,
+          { method: data.rest.method, url: data.rest.url }
+        ));
+      }
+
+      // Response (transport)
+      if (data.channel === 'kafka' || data.channel === 'flow') {
+        if (kr.wait_error) {
+          parts.push(resultBlock(
+            'Response',
+            'timeout',
+            { error: kr.wait_error, correlation_id: data.correlation_id, topic: data.reply_topic },
+            'is-response'
+          ));
+        } else if (reply) {
+          parts.push(resultBlock(
+            'Response',
+            reply.topic || data.reply_topic || data.watch_topic || '',
+            {
+              topic: reply.topic || data.reply_topic,
+              correlation_id: reply.correlation_id || data.correlation_id,
+              headers: reply.headers || {},
+              body: reply.body != null ? reply.body : null,
+            },
+            'is-response'
+          ));
+        } else if (kr.body) {
+          parts.push(resultBlock('Response', data.reply_topic || '', { body: kr.body }, 'is-response'));
+        }
+      }
+      if (data.rest) {
+        let restBody = data.rest.body;
+        try { restBody = JSON.parse(data.rest.body); } catch (_) {}
+        const restTitle = (data.channel === 'flow' && (kr.reply || kr.body || kr.wait_error))
+          ? 'REST response'
+          : 'Response';
+        parts.push(resultBlock(
+          restTitle,
+          `HTTP ${data.rest.status_code}${data.rest.truncated ? ' (truncated)' : ''}`,
+          {
+            status_code: data.rest.status_code,
+            url: data.rest.url,
+            body: restBody,
+          },
+          'is-response'
+        ));
+      }
+
+      // Result (outcome)
+      const statusTag = outcome.status === 'ok' ? 'ok'
+        : outcome.status === 'err' ? 'err'
+        : 'warn';
+      parts.push(resultBlock(
+        'Result',
+        statusTag,
+        outcome,
+        'is-result'
+      ));
+
+      // Fix tag class on Result block (resultBlock escapes tag as text only — inject class via replace)
+      const last = parts[parts.length - 1].replace(
+        '<span class="tag">' + statusTag + '</span>',
+        '<span class="tag ' + statusTag + '">' + statusTag + '</span>'
+      );
+      parts[parts.length - 1] = last;
+
+      if (data.s3 && !outcome.s3) {
+        parts.push(resultBlock('S3 object', `${data.s3.bucket}/${data.s3.key || ''}`, data.s3));
+      }
+
+      parts.push(`<details style="margin-top:0.75rem;"><summary style="cursor:pointer;color:var(--muted);font-size:0.75rem;">Raw JSON</summary>${resultBlock('Raw', '', data)}</details>`);
+
+      if (isStreamWatchTopic(data.watch_topic)) {
+        const subID = (data.kafka_result && data.kafka_result.body && data.kafka_result.body.subscription_id)
+          || (outcome.payload && outcome.payload.subscription_id)
+          || '';
+        parts.push(`<div class="result-block is-response" style="margin-top:0.75rem;">
+          <div class="result-block-title">
+            <span>Live events</span>
+            <span class="tag" id="scenario-live-count">0</span>
+          </div>
+          <div style="padding:0.5rem 0.75rem 0;font-size:0.75rem;color:var(--muted);" id="scenario-live-status">connecting…</div>
+          <div class="live-events-list" id="scenario-live-events">
+            <div class="empty">Ожидание событий в ${escapeHtml(data.watch_topic)}. Рестартните pod в namespace — здесь появятся MODIFIED / RESTART.</div>
+          </div>
+        </div>`);
+      }
+
+      box.innerHTML = parts.join('');
+      setScenarioResultMeta([
+        data.scenario_id,
+        data.channel,
+        outcome.status,
+        data.correlation_id ? `corr=${data.correlation_id}` : '',
+      ].filter(Boolean).join(' · '));
+
+      if (isStreamWatchTopic(data.watch_topic)) {
+        const subID = (data.kafka_result && data.kafka_result.body && data.kafka_result.body.subscription_id)
+          || (outcome.payload && outcome.payload.subscription_id)
+          || '';
+        startScenarioLive(data.watch_topic, subID);
+      } else {
+        stopScenarioLive();
+      }
+    }
+
+    async function loadScenarios() {
+      const statusEl = document.getElementById('scenarios-status');
+      setStatus(statusEl, 'Loading…', 'waiting');
+      const res = await fetch('/api/scenarios');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      scenarios = data.scenarios || [];
+      document.getElementById('agent-http-label').textContent = data.agent_http_url || '(not set)';
+      renderScenarios();
+      setStatus(statusEl, scenarios.length + ' stubs', 'ok');
+    }
+
+    function renderScenarios() {
+      const root = document.getElementById('scenarios-groups');
+      const byGroup = {};
+      scenarios.forEach(sc => {
+        const g = sc.group || 'Other';
+        if (!byGroup[g]) byGroup[g] = [];
+        byGroup[g].push(sc);
+      });
+      root.innerHTML = '';
+      Object.keys(byGroup).forEach(group => {
+        const section = document.createElement('div');
+        section.className = 'scenario-group';
+        section.innerHTML = `<h2>${escapeHtml(group)}</h2>`;
+        const grid = document.createElement('div');
+        grid.className = 'scenario-grid';
+        byGroup[group].forEach(sc => {
+          const card = document.createElement('div');
+          card.className = 'scenario-card' + (sc.id === lastScenarioId ? ' active-run' : '');
+          card.innerHTML = `
+            <div class="channel">${escapeHtml(sc.channel)}</div>
+            <h3>${escapeHtml(sc.title)}</h3>
+            <p>${escapeHtml(sc.description)}</p>
+            <button class="primary" data-scenario="${escapeHtml(sc.id)}">Run</button>`;
+          card.querySelector('button').addEventListener('click', () => runScenario(sc.id));
+          grid.appendChild(card);
+        });
+        section.appendChild(grid);
+        root.appendChild(section);
+      });
+    }
+
+    async function runScenario(id) {
+      const statusEl = document.getElementById('scenarios-status');
+      const box = document.getElementById('scenario-result');
+      markActiveScenario(id);
+      setStatus(statusEl, 'Running ' + id + '…', 'waiting');
+      setScenarioResultMeta('Running…');
+      box.innerHTML = '<div class="empty">Waiting for agent…</div>';
+      try {
+        const res = await fetch('/api/scenarios/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+
+        renderScenarioResult(data);
+
+        if (data.watch_topic) {
+          selectOnlyTopic(data.watch_topic);
+          // Stream topics (cluster.events / logs.stream) are keyed by subscription_id in the body,
+          // not by the command correlation_id. Clearing the filter avoids an empty Kafka Monitor.
+          if (isStreamWatchTopic(data.watch_topic)) {
+            document.getElementById('correlation-id').value = '';
+            startLive([data.watch_topic]);
+          } else if (data.correlation_id) {
+            document.getElementById('correlation-id').value = data.correlation_id;
+          }
+        }
+        if (data.s3 && data.s3.bucket) {
+          document.getElementById('s3-bucket').value = data.s3.bucket;
+          document.getElementById('s3-key').value = data.s3.key || '';
+        }
+        setStatus(statusEl, 'OK', 'ok');
+      } catch (e) {
+        stopScenarioLive();
+        box.innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`;
+        setScenarioResultMeta('Error');
+        setStatus(statusEl, e.message, 'err');
+      }
+    }
+
+    document.getElementById('scenarios-refresh-btn').addEventListener('click', () => {
+      loadScenarios().catch(e => setStatus(document.getElementById('scenarios-status'), e.message, 'err'));
+    });
+
+    loadScenarios().catch(err => console.error(err));
   </script>
 </body>
 </html>

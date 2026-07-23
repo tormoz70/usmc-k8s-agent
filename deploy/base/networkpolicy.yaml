@@ -111,4 +111,4 @@ spec:
           port: 9092
     - ports:
         - protocol: TCP
-          port: 9000
+          port: 9010

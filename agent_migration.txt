@@ -1,0 +1,6193 @@
+### USER
+Смотри, у меня есть проект на Java, я хочу переформировать его на go, подскажи какие этапы нужно пройти
+  
+Как работает @uamc-agent/
+
+    @uamc-agent/ — это отдельный Spring Boot микросервис (не часть uamc-core), который разворачивается внутри кластера Kubernetes как sidecar-компонент. Он взаимодействует с uamc-core через Kafka, а с самим кластером — через
+    Kubernetes API.
+
+    Архитектура
+
+    Агент собирается как единый uber-JAR (uamc-agent.jar), но внутренне разделён на профили Spring (вместо обычных бинов):
+
+      1 uamc-agent/
+      2 ├── uamc-agent/                      # главный модуль (AppConfig + профили)
+      3 ├── uamc-agent-commons/              # общие утилиты, исключения, конфиги
+      4 ├── uamc-agent-kubeapi/              # клиент Kubernetes API
+      5 ├── uamc-agent-eventswatcher/        # наблюдатель за событиями кластера
+      6 ├── uamc-agent-metricswatcher/       # сбор метрик
+      7 ├── uamc-agent-loglevel/             # управление уровнями логирования
+      8 ├── uamc-agent-ailogscollector/      # сбор логов для AI агента
+      9 ├── uamc-agent-ottlogswatcher/       # сбор логов OTT sidecar
+     10 ├── uamc-agent-ottlogstruewatcher/   # watcher логов OTT-Sidecar
+     11 └── uamc-agent-resourcewatcher/      # watcher ресурсов
+
+    Ключевая особенность: все бины (@Controller, @Component, @Service) должны определяться только в профильных AppConfig файлах (например, KubeApiAppConfig, AiLogsCollectorAppConfig). Это проверяется task'ом validateSources
+    при сборке. Аннотации в обычных классах модулей запрещены.
+
+    Профили и режимы работы
+
+    Агент запускается с одним или несколькими профилями, каждый из которых подключает соответствующий модуль:
+
+
+    ┌──────────┬────────────────────────────┬──────────────────────────────────────┐
+    │ Профиль  │ Модуль                     │ Назначение                           │
+    ├──────────┼────────────────────────────┼──────────────────────────────────────┤
+    │ KUBEAPI  │ uamc-agent-kubeapi         │ proxy для доступа к API k8s          │
+    │ EVENTSW  │ uamc-agent-eventswatcher   │ сбор событий кластера                │
+    │ LOGLEVL  │ uamc-agent-loglevel        │ управление уровнями логов для Tengri │
+    │ AILOGSC  │ uamc-agent-ailogscollector │ сбор логов для AI агента             │
+    │ OTTLOGSW │ uamc-agent-ottlogswatcher  │ watcher логов OTT-Sidecar            │
+    │ METRICSW │ uamc-agent-metricswatcher  │ сбор метрик                          │
+    └──────────┴────────────────────────────┴──────────────────────────────────────┘
+
+
+    Конфигурация из application.yml:
+
+     1 spring.profiles.active: KUBEAPI,EVENTSW,LOGLEVL,K8S,METRICSW,AILOGSC
+
+    Взаимодействие с uamc-core
+
+    Агент работает по асинхронной request-response модели через Kafka:
+
+     1. Запросы от ядра приходят в топик in-requests:
+
+     1    uamc-core.ssl.request.{cluster-id}-{uamc-agent}
+     2. Ответы агенту приходят в топик:
+
+     1    uamc-agent.ssl.response.{cluster-id}-{uamc-agent}
+     3. Запросы от агента к ядру отправляются в топик:
+
+     1    uamc-agent.ssl.request
+     4. Адресат сообщений — "uamc-core", отправитель — cluster-name агента.
+
+    API контракты (REST)
+
+    Агенты не вызывают друг друга напрямую через REST — всё идёт через Kafka. Но модуль uamc-agent-kubeapi сам предоставляет REST-endpoint как proxy к Kubernetes API для UI (uamc-ui). Это позволяет UI работать с k8s без
+    прямого доступа к API кластера.
+
+    Также модули предоставляют REST API для управления:
+     - OttLogsStartWatchingController / OttLogsStopWatchingController — старт/стоп сбора логов
+     - LLController — запросы на изменение уровня логирования
+     - UpdateLLCacheController — приём обновлений от ядра
+     - AiLogsCollectorCollectLogsController / AiLogsCollectorGetPodsController — сбор логов AI
+
+    Kafka контракты
+
+    Контракт описан в CoreClient.java через protobuf-сообщения:
+
+     1 ProtoHeaders:
+     2   - messageId, correlationId: UUID
+     3   - topic, topicForResponse: String
+     4   - direction: REQUEST | RESPONSE
+     5   - addressee: "uamc-core"
+     6   - sender: cluster-name
+     7   - messageType: имя класса protobuf-сообщения
+     8   - requestType: тип запроса (enum RequestType)
+     9   - timestamp: ISO LocalDateTime
+
+    Дополнительные топики из конфига:
+
+     1 out-request-topic: uamc-agent.ssl.request
+     2 out-request-topic-to-events-consumer: uamc-events-watcher.ssl.request
+     3 out-request-topic-to-metrics-consumer: uamc-metrics-watcher.ssl.request
+
+    Ключевые параметры Kafka:
+     - auto.offset.reset: latest — только новые сообщения
+     - enable.auto.commit: true с auto.commit.interval.ms: 3000
+     - max.poll.records: 10
+     - pause-after-each-poll-ms: 1000 — пауза между poll
+     - in-response-topic-timeout-ms: 10000 — таймаут ожидания ответа
+     - in-heartbeat-timeout-ms: 2000
+
+    Внутренние паттерны
+
+     1. Cache-Aside — кэши с TTL для конфигов, кластеров, событий, метрик
+     2. Key-Based Synchronization (StringKeySynchronizer) — потокобезопасная обработка запросов по ключу {cluster}/{namespace}/{object}
+     3. Двойная проверка в LLService: перед запросом в ядро проверяется актуальность через LLCache.updateNewRequest()
+     4. Reactive batching в OttLogSendBuffer — реактивная отправка пачек логов
+     5. Self-registration — агент при старте регистрирует себя в ядре (с настраиваемыми задержками)
+
+    Дополнительные зависимости
+
+    Агент использует S3cloud (s3cloud.sbrf.ru, bucket uamc-transfer) для передачи артефактов (логи, дампы). Доступ через переменные окружения:
+
+     1 S3CLOUD_ACCESS_KEY_ID
+     2 S3CLOUD_SECRET_ACCESS_KEY
+
+    Также используется gRPC (порт grpc.server.port в конфиге) — для каких-то внутренних вызовов (например, в healthcheck-сценариях).
+
+    Контракты, которым должен соответствовать @uamc-agent/
+
+    Kafka контракты:
+     - Поддержка топиков uamc-agent.ssl.request (исходящие), uamc-core.ssl.request.* (входящие), uamc-agent.ssl.response.* (ответы)
+     - Формат сообщений: protobuf с заголовками ProtoHeaders (messageId, correlationId, requestType, sender, addressee="uamc-core")
+     - Параметры consumer/producer в соответствии с конфигом выше
+
+    API контракты:
+     - REST proxy к Kubernetes API (модуль uamc-agent-kubeapi)
+     - REST контроллеры для операций модулей (старт/стоп watchers, изменение уровней логов)
+     - gRPC сервер для служебных вызовов
+
+    Кросс-кластерная маршрутизация:
+     - Каждый агент уникален по {cluster-id}-{uamc-agent} в имени топика
+     - Поддержка multi-cluster через cluster-name в заголовках
+
+    Helm/Kubernetes:
+     - Деплой через Helm chart из uamc-agent/helm-k8s
+     - Генерация Helm/Dockerfile через Gradle tasks (makeDockerfile, filterCopyfile)
+     - Ресурсы: helm-k8s/, openshift-template/, efs-config/
+
+Задавай вопросы, если требуется
+
+### ASSISTANT
+Ниже — практичный план миграции `@uamc-agent/` с Java/Spring Boot на Go. Я бы шёл не через «переписать всё разом», а через поэтапный перенос с сохранением всех внешних контрактов: Kafka, protobuf, REST, gRPC, Kubernetes API, Helm, S3.
+
+Ключевая идея: **Go-агент должен стать тем же sidecar-компонентом с теми же контрактами, но без Spring-магии**. Профили Spring лучше заменить явной конфигурацией модулей, а аннотации — обычной композицией зависимостей.
+
+---
+
+# 1. Что важно зафиксировать до начала миграции
+
+До написания Go-кода нужно зафиксировать внешние контракты, потому что именно они являются границей совместимости с `uamc-core`, `uamc-ui`, Kubernetes и другими агентами.
+
+## 1.1. Kafka-контракты
+
+Нужно явно описать:
+
+### Входящие топики
+
+Запросы от `uamc-core`:
+
+```text
+uamc-core.ssl.request.{cluster-id}-{uamc-agent}
+```
+
+### Исходящие топики
+
+Ответы агента:
+
+```text
+uamc-agent.ssl.response.{cluster-id}-{uamc-agent}
+```
+
+Запросы от агента к ядру:
+
+```text
+uamc-agent.ssl.request
+```
+
+Дополнительные топики:
+
+```text
+uamc-events-watcher.ssl.request
+uamc-metrics-watcher.ssl.request
+```
+
+### Параметры consumer/producer
+
+Нужно сохранить или осознанно заменить:
+
+```yaml
+auto.offset.reset: latest
+enable.auto.commit: true
+auto.commit.interval.ms: 3000
+max.poll.records: 10
+pause-after-each-poll-ms: 1000
+in-response-topic-timeout-ms: 10000
+in-heartbeat-timeout-ms: 2000
+```
+
+В Go это не обязательно переносить 1-в-1, но поведение должно быть совместимым: offsets, таймауты, порядок обработки, паузы, retry, идемпотентность.
+
+---
+
+## 1.2. Protobuf-контракты
+
+Нужно вынести все `.proto` файлы из Java-проекта и сделать их источником правды.
+
+Особенно важно сохранить:
+
+```text
+ProtoHeaders:
+  messageId
+  correlationId
+  topic
+  topicForResponse
+  direction: REQUEST | RESPONSE
+  addressee: "uamc-core"
+  sender: cluster-name
+  messageType
+  requestType
+  timestamp
+```
+
+Нужно проверить:
+
+1. Какие именно protobuf-сообщения используются.
+2. Как кодируются заголовки: как Kafka headers или как часть тела сообщения.
+3. Как сериализуется `timestamp`: ISO LocalDateTime, UTC, RFC3339, миллисекунды.
+4. Как сериализуются UUID.
+5. Как передаётся `requestType`: enum name, enum number, string.
+6. Как формируются `messageType`: полное имя protobuf-типа или короткое имя класса.
+7. Есть ли обратная совместимость с Java-десериализацией.
+
+Это одна из самых рискованных зон.
+
+---
+
+## 1.3. REST-контракты
+
+Нужно выписать все REST endpoint'ы:
+
+### Kubernetes API proxy
+
+Модуль:
+
+```text
+uamc-agent-kubeapi
+```
+
+Предоставляет UI доступ к Kubernetes API через агент.
+
+Нужно зафиксировать:
+
+- базовый путь;
+- методы;
+- параметры;
+- модель авторизации;
+- проброс токенов;
+- impersonation;
+- ограничения по namespace;
+- обработку ошибок Kubernetes API;
+- таймауты;
+- streaming/watch, если есть.
+
+### Управление OTT-логами
+
+```text
+OttLogsStartWatchingController
+OttLogsStopWatchingController
+```
+
+### Управление уровнями логирования
+
+```text
+LLController
+UpdateLLCacheController
+```
+
+### AI logs collector
+
+```text
+AiLogsCollectorCollectLogsController
+AiLogsCollectorGetPodsController
+```
+
+Желательно сгенерировать OpenAPI/Swagger из Java-проекта или выгрузить его вручную.
+
+---
+
+## 1.4. gRPC-контракты
+
+Нужно найти все `.proto` файлы gRPC и зафиксировать:
+
+- порт;
+- сервисы;
+- методы;
+- request/response типы;
+- error codes;
+- metadata;
+- healthcheck-сценарии.
+
+---
+
+## 1.5. Kubernetes-контракты
+
+Нужно выписать:
+
+- какие ресурсы читает агент;
+- какие ресурсы создаёт/удаляет/патчит;
+- какие events собираются;
+- какие метрики собираются;
+- какие pod logs читаются;
+- какие RBAC-правила нужны;
+- используется ли in-cluster config или kubeconfig;
+- есть ли multi-cluster;
+- как определяется `cluster-id`;
+- как определяется `cluster-name`;
+- как агент регистрирует себя в ядре.
+
+---
+
+# 2. Целевая архитектура Go-агента
+
+На Go не нужно воспроизводить Spring Boot один в один. Лучше сделать явно собираемое приложение с модулями.
+
+## 2.1. Общая идея
+
+В Java у тебя:
+
+```text
+Spring profiles -> модули -> бины -> автоконфигурация
+```
+
+В Go лучше сделать:
+
+```text
+config -> module registry -> explicit constructors -> app runner
+```
+
+То есть конфигурация определяет, какие модули включены:
+
+```yaml
+agent:
+  modules:
+    - kubeapi
+    - eventswatcher
+    - loglevel
+    - metricswatcher
+    - ailogscollector
+    - ottlogswatcher
+```
+
+Каждый модуль явно регистрируется в приложении.
+
+---
+
+## 2.2. Рекомендуемая структура репозитория
+
+Примерно так:
+
+```text
+uamc-agent-go/
+├── cmd/
+│   └── uamc-agent/
+│       └── main.go
+│
+├── api/
+│   ├── proto/
+│   │   ├── core/
+│   │   ├── headers/
+│   │   ├── events/
+│   │   ├── metrics/
+│   │   ├── logs/
+│   │   └── grpc/
+│   └── openapi/
+│
+├── internal/
+│   ├── app/
+│   │   ├── app.go
+│   │   ├── module.go
+│   │   └── runner.go
+│   │
+│   ├── config/
+│   │   ├── config.go
+│   │   ├── loader.go
+│   │   └── validate.go
+│   │
+│   ├── bootstrap/
+│   │   ├── kafka.go
+│   │   ├── kubernetes.go
+│   │   ├── grpc.go
+│   │   ├── http.go
+│   │   ├── s3.go
+│   │   └── logger.go
+│   │
+│   ├── kafka/
+│   │   ├── consumer.go
+│   │   ├── producer.go
+│   │   ├── headers.go
+│   │   ├── poller.go
+│   │   └── config.go
+│   │
+│   ├── coreclient/
+│   │   ├── client.go
+│   │   ├── request.go
+│   │   ├── response.go
+│   │   ├── pending.go
+│   │   └── retry.go
+│   │
+│   ├── protoheaders/
+│   │   ├── headers.go
+│   │   └── mapper.go
+│   │
+│   ├── kube/
+│   │   ├── client.go
+│   │   ├── informers.go
+│   │   ├── proxy.go
+│   │   └── rbac.go
+│   │
+│   ├── cache/
+│   │   ├── ttl.go
+│   │   ├── cacheaside.go
+│   │   └── llcache.go
+│   │
+│   ├── keyedlock/
+│   │   └── synchronizer.go
+│   │
+│   ├── batcher/
+│   │   └── batcher.go
+│   │
+│   ├── s3/
+│   │   └── client.go
+│   │
+│   ├── health/
+│   │   ├── health.go
+│   │   └── readiness.go
+│   │
+│   ├── modules/
+│   │   ├── kubeapi/
+│   │   ├── eventswatcher/
+│   │   ├── metricswatcher/
+│   │   ├── loglevel/
+│   │   ├── ailogscollector/
+│   │   ├── ottlogswatcher/
+│   │   ├── ottlogstruewatcher/
+│   │   └── resourcewatcher/
+│   │
+│   └── platform/
+│       ├── errors/
+│       ├── logging/
+│       ├── metrics/
+│       ├── tracing/
+│       └── httputil/
+│
+├── deployments/
+│   ├── docker/
+│   │   └── Dockerfile
+│   └── helm/
+│       └── uamc-agent/
+│
+├── test/
+│   ├── contract/
+│   ├── integration/
+│   └── e2e/
+│
+├── Makefile
+├── Taskfile.yml
+├── go.mod
+└── go.sum
+```
+
+---
+
+# 3. Соответствие Java/Spring и Go
+
+| Java/Spring | Go-эквивалент |
+|---|---|
+| Spring Boot application | `main.go` + app runner |
+| Spring profiles | config `modules.enabled` |
+| `@Component`, `@Service` | explicit constructors |
+| `@Configuration` | bootstrap/factory packages |
+| Spring DI | manual DI, `google/wire`, `uber-go/fx` |
+| `application.yml` | `koanf`, `viper`, `envconfig` |
+| KafkaListener | consumer worker/goroutine |
+| RestTemplate/WebClient | `net/http.Client` |
+| Spring MVC controllers | `chi`, `echo`, `gin`, `net/http` |
+| Spring Cache | `ristretto`, `go-cache`, custom TTL cache |
+| `synchronized`, locks | `sync.Mutex`, `sync.RWMutex`, keyed locks |
+| Reactor / reactive batching | channels, tickers, worker pools |
+| Gradle modules | Go packages/modules |
+| Gradle tasks | Makefile/Taskfile/goreleaser |
+| uber-JAR | static Go binary |
+| Spring Actuator | custom `/healthz`, `/readyz`, `/metrics`, pprof |
+
+---
+
+# 4. Этапы миграции
+
+---
+
+## Этап 0. Определить цели и ограничения
+
+Перед стартом нужно ответить на вопросы:
+
+1. Зачем миграция:
+   - производительность;
+   - потребление памяти;
+   - упрощение поддержки;
+   - уход от Java/Spring;
+   - стандартизация инфраструктуры;
+   - уменьшение размера образа.
+
+2. Нужна ли полная совместимость:
+   - можно ли менять Kafka-контракты;
+   - можно ли менять REST API;
+   - можно ли менять Helm values;
+   - можно ли менять поведение watchers.
+
+3. Допустим ли параллельный запуск:
+   - Java и Go агенты одновременно;
+   - shadow mode;
+   - canary;
+   - постепенная замена по кластерам.
+
+4. Какие модули самые критичные:
+   - kubeapi;
+   - eventswatcher;
+   - metricswatcher;
+   - loglevel;
+   - ailogscollector;
+   - ott logs.
+
+Результат этапа:
+
+```text
+- границы миграции;
+- список модулей;
+- требования совместимости;
+- стратегия rollout;
+- критерии успеха.
+```
+
+---
+
+## Этап 1. Инвентаризация текущего Java-агента
+
+Нужно выгрузить из текущего проекта полную карту поведения.
+
+### Что собрать
+
+1. Все Spring profiles.
+2. Все модули.
+3. Все `AppConfig`-классы.
+4. Все бины, которые создаются в каждом профиле.
+5. Все Kafka consumers/producers.
+6. Все топики.
+7. Все protobuf-сообщения.
+8. Все REST controllers.
+9. Все gRPC services.
+10. Все scheduled tasks.
+11. Все cache.
+12. Все внешние клиенты:
+    - Kubernetes API;
+    - Kafka;
+    - S3;
+    - uamc-core;
+    - metrics sources;
+    - log sources.
+13. Все retry/timeout/backoff настройки.
+14. Все health checks.
+15. Все Helm values.
+16. Все environment variables.
+17. Все секреты.
+
+Результат этапа:
+
+```text
+- functional inventory;
+- module dependency graph;
+- contract matrix;
+- configuration matrix;
+- deployment matrix.
+```
+
+---
+
+## Этап 2. Заморозка контрактов
+
+Это критический этап.
+
+Нужно создать отдельный контрактный пакет:
+
+```text
+contracts/
+├── kafka/
+│   ├── topics.md
+│   ├── headers.md
+│   └── examples/
+├── proto/
+├── openapi/
+├── grpc/
+└── behavior/
+```
+
+### Что должно быть зафиксировано
+
+#### Kafka
+
+```text
+topic name patterns
+message format
+headers format
+correlation model
+request/response model
+error responses
+retry behavior
+consumer group behavior
+offset commit behavior
+```
+
+#### Protobuf
+
+```text
+.proto files
+message types
+enum values
+binary compatibility rules
+header mapping
+timestamp format
+UUID format
+```
+
+#### REST
+
+```text
+paths
+methods
+query params
+request bodies
+response bodies
+status codes
+error format
+auth model
+```
+
+#### gRPC
+
+```text
+services
+methods
+messages
+status codes
+metadata
+health protocol
+```
+
+Результат этапа:
+
+```text
+Контракты больше не берутся из кода на лету.
+Они становятся источником правды для Go-реализации.
+```
+
+---
+
+## Этап 3. Сгенерировать protobuf и gRPC для Go
+
+Нужно настроить генерацию кода.
+
+Инструменты:
+
+```bash
+protoc
+protoc-gen-go
+protoc-gen-go-grpc
+buf
+```
+
+Рекомендую использовать `buf`, потому что он удобно управляет:
+
+- генерацией;
+- linting;
+- breaking changes;
+- зависимостями proto.
+
+Пример:
+
+```bash
+buf generate
+```
+
+Результат:
+
+```text
+Go-типы protobuf полностью совпадают с Java-контрактами.
+```
+
+Особое внимание:
+
+```text
+package names
+go_package option
+enum numbering
+nullable fields
+timestamp well-known types
+Any
+oneof
+```
+
+---
+
+## Этап 4. Создать базовый Go-скелет
+
+На этом этапе делается пустой, но правильно собранный сервис.
+
+### Что должно появиться
+
+1. `main.go`.
+2. Загрузка конфигурации.
+3. Логирование.
+4. Graceful shutdown.
+5. Health endpoints.
+6. Metrics endpoint.
+7. HTTP server.
+8. gRPC server.
+9. Kafka producer/consumer skeleton.
+10. Kubernetes client skeleton.
+11. S3 client skeleton.
+12. Module registry.
+
+### Конфигурация
+
+Пример конфигурации:
+
+```yaml
+app:
+  name: uamc-agent
+  clusterId: cluster-123
+  clusterName: prod-cluster-1
+
+server:
+  http:
+    port: 8080
+  grpc:
+    port: 9090
+
+modules:
+  kubeapi: true
+  eventswatcher: true
+  loglevel: true
+  metricswatcher: true
+  ailogscollector: true
+  ottlogswatcher: false
+  resourcewatcher: false
+
+kafka:
+  bootstrapServers:
+    - kafka-1:9093
+    - kafka-2:9093
+  inRequestTopicTemplate: "uamc-core.ssl.request.{cluster-id}-{uamc-agent}"
+  outResponseTopicTemplate: "uamc-agent.ssl.response.{cluster-id}-{uamc-agent}"
+  outRequestTopic: "uamc-agent.ssl.request"
+  autoOffsetReset: latest
+  enableAutoCommit: true
+  autoCommitIntervalMs: 3000
+  maxPollRecords: 10
+  pauseAfterEachPollMs: 1000
+  inResponseTopicTimeoutMs: 10000
+  inHeartbeatTimeoutMs: 2000
+
+kubernetes:
+  inCluster: true
+  kubeconfig: ""
+
+s3:
+  endpoint: s3cloud.sbrf.ru
+  bucket: uamc-transfer
+  accessKeyIdEnv: S3CLOUD_ACCESS_KEY_ID
+  secretAccessKeyEnv: S3CLOUD_SECRET_ACCESS_KEY
+```
+
+В Go можно использовать:
+
+```text
+koanf
+viper
+envconfig
+kelseyhightower/envconfig
+```
+
+Я бы рекомендовал:
+
+```text
+koanf + env overrides + validation
+```
+
+---
+
+## Этап 5. Реализовать общий инфраструктурный слой
+
+Это самый важный этап. Если он сделан хорошо, модули переносить будет легче.
+
+---
+
+## 5.1. Config module
+
+Нужно реализовать:
+
+- загрузку `application.yml`;
+- environment variables;
+- Kubernetes-specific variables;
+- валидацию;
+- default values;
+- hot reload, если нужен.
+
+Аналог Spring profiles:
+
+```go
+type ModulesConfig struct {
+    KubeAPI         bool `koanf:"kubeapi"`
+    EventsWatcher   bool `koanf:"eventswatcher"`
+    LogLevel        bool `koanf:"loglevel"`
+    MetricsWatcher  bool `koanf:"metricswatcher"`
+    AiLogsCollector bool `koanf:"ailogscollector"`
+    OttLogsWatcher  bool `koanf:"ottlogswatcher"`
+    ResourceWatcher bool `koanf:"resourcewatcher"`
+}
+```
+
+Или список:
+
+```yaml
+modules:
+  enabled:
+    - kubeapi
+    - eventswatcher
+    - loglevel
+```
+
+---
+
+## 5.2. Logging
+
+В Java, скорее всего, Logback/Log4j2.
+
+В Go варианты:
+
+```text
+slog
+zap
+zerolog
+```
+
+Рекомендация:
+
+```text
+slog, если нужна простота и стандартная библиотека.
+zap, если нужна максимальная производительность и зрелая экосистема.
+```
+
+Нужно реализовать:
+
+- structured logging;
+- level;
+- correlationId;
+- messageId;
+- clusterName;
+- module name;
+- requestType.
+
+Пример:
+
+```go
+logger.Info(
+    "kafka message processed",
+    slog.String("message_id", messageID),
+    slog.String("correlation_id", correlationID),
+    slog.String("request_type", requestType),
+)
+```
+
+---
+
+## 5.3. Kafka client
+
+Выбор библиотеки:
+
+### Варианты
+
+1. `confluent-kafka-go`
+   - использует `librdkafka`;
+   - ближе к поведению Java Kafka client;
+   - хорош, если важны точные consumer semantics.
+
+2. `segmentio/kafka-go`
+   - проще;
+   - чище API;
+   - меньше внешних зависимостей.
+
+3. `twmb/franz-go`
+   - очень гибкий;
+   - производительный;
+   - поддерживает много фич;
+   - хорош для сложных сценариев.
+
+Для вашего случая я бы рассматривал:
+
+```text
+confluent-kafka-go — если нужно максимально близко к Java consumer behavior.
+franz-go — если хочется современный чистый Go-подход.
+```
+
+Нужно реализовать:
+
+- producer;
+- consumer;
+- consumer group;
+- headers;
+- protobuf deserialization;
+- error handling;
+- retry;
+- pause/resume;
+- commit offsets;
+- max poll records;
+- poll loop;
+- graceful shutdown.
+
+Особенно важно воспроизвести:
+
+```text
+auto.offset.reset: latest
+enable.auto.commit: true
+auto.commit.interval.ms: 3000
+max.poll.records: 10
+pause-after-each-poll-ms: 1000
+```
+
+---
+
+## 5.4. CoreClient
+
+Это аналог `CoreClient.java`.
+
+Он должен уметь:
+
+1. Отправлять запросы в `uamc-core`.
+2. Ждать ответы по `correlationId`.
+3. Обрабатывать таймауты.
+4. Работать с `ProtoHeaders`.
+5. Поддерживать request/response correlation.
+6. Повторять запросы, если нужно.
+7. Обрабатывать heartbeat.
+8. Обрабатывать ошибки сериализации.
+
+Пример абстракции:
+
+```go
+type CoreClient interface {
+    SendRequest(ctx context.Context, req *Request) (*Response, error)
+    SendAsync(ctx context.Context, req *Request) error
+    HandleResponse(ctx context.Context, msg *IncomingMessage) error
+}
+```
+
+Внутри нужен pending registry:
+
+```go
+type pendingRequest struct {
+    correlationID string
+    responseChan  chan *Response
+    createdAt     time.Time
+    timeout       time.Duration
+}
+```
+
+И map:
+
+```go
+map[string]*pendingRequest
+```
+
+С мьютексом:
+
+```go
+sync.RWMutex
+```
+
+---
+
+## 5.5. ProtoHeaders mapper
+
+Нужно реализовать маппинг между Kafka headers и protobuf-заголовками.
+
+Пример:
+
+```go
+type ProtoHeaders struct {
+    MessageID          string
+    CorrelationID      string
+    Topic              string
+    TopicForResponse   string
+    Direction          Direction
+    Addressee          string
+    Sender             string
+    MessageType        string
+    RequestType        string
+    Timestamp          time.Time
+}
+```
+
+Нужно проверить:
+
+```text
+Как Java пишет timestamp.
+Как Java читает timestamp.
+Какой формат UUID.
+Какие имена заголовков.
+Есть ли префиксы.
+```
+
+---
+
+## 5.6. Cache-Aside
+
+В Java у тебя кэши с TTL.
+
+В Go можно использовать:
+
+```text
+dgraph-io/ristretto
+patrickmn/go-cache
+hashicorp/golang-lru
+custom cache
+```
+
+Для простых TTL-кэшей:
+
+```text
+patrickmn/go-cache
+```
+
+Для более серьёзных сценариев:
+
+```text
+ristretto
+```
+
+Нужно реализовать:
+
+- TTL;
+- invalidation;
+- refresh;
+- cache aside;
+- thread safety;
+- metrics cache hit/miss;
+- optional max size.
+
+---
+
+## 5.7. Key-Based Synchronization
+
+В Java есть `StringKeySynchronizer` для ключей вида:
+
+```text
+{cluster}/{namespace}/{object}
+```
+
+В Go нужен аналог.
+
+Варианты:
+
+1. Custom keyed mutex.
+2. `golang.org/x/sync/singleflight`.
+3. `github.com/teambition/rrlock-go`.
+4. Semaphore per key.
+
+Пример custom keyed locker:
+
+```go
+type KeyedLocker struct {
+    mu    sync.Mutex
+    locks map[string]*sync.Mutex
+}
+```
+
+Но лучше делать с reference counting, чтобы не текла память:
+
+```go
+type keyLock struct {
+    mu       sync.Mutex
+    refCount int
+}
+```
+
+Поведение:
+
+```text
+Запросы с одним ключом обрабатываются последовательно.
+Запросы с разными ключами обрабатываются параллельно.
+```
+
+---
+
+## 5.8. Reactive batching replacement
+
+В Java есть `OttLogSendBuffer` с реактивной отправкой пачек.
+
+В Go это реализуется через:
+
+```text
+channels
+ticker
+batch size
+flush timeout
+worker pool
+context cancellation
+```
+
+Пример логики:
+
+```text
+logs -> channel -> batcher
+batcher accumulates until:
+  - batch size reached
+  - flush interval reached
+  - context cancelled
+  - buffer limit reached
+then sends batch
+```
+
+Нужно продумать:
+
+- backpressure;
+- max buffer size;
+- drop policy;
+- retry;
+- ordering;
+- duplicates;
+- partial failure.
+
+---
+
+## 5.9. S3 client
+
+Для S3cloud, если это S3-compatible storage, можно использовать:
+
+```text
+minio-go
+aws-sdk-go-v2
+```
+
+Если S3cloud совместим с AWS S3 API:
+
+```text
+aws-sdk-go-v2 + custom endpoint
+```
+
+Если удобнее MinIO client:
+
+```text
+minio-go
+```
+
+Нужно реализовать:
+
+- upload;
+- download;
+- presigned URLs, если нужны;
+- multipart upload;
+- retries;
+- timeouts;
+- content type;
+- metadata;
+- bucket naming;
+- TLS/custom CA.
+
+Переменные:
+
+```text
+S3CLOUD_ACCESS_KEY_ID
+S3CLOUD_SECRET_ACCESS_KEY
+```
+
+---
+
+## 5.10. Kubernetes client
+
+Использовать:
+
+```text
+client-go
+```
+
+Пакеты:
+
+```go
+k8s.io/client-go/kubernetes
+k8s.io/client-go/rest
+k8s.io/client-go/tools/clientcmd
+k8s.io/client-go/informers
+k8s.io/client-go/tools/cache
+```
+
+Нужно реализовать:
+
+- in-cluster config;
+- kubeconfig fallback;
+- timeout;
+- retry;
+- watch;
+- informers;
+- resync;
+- resourceVersion handling;
+- leader election, если нужно;
+- RBAC validation.
+
+---
+
+# 6. Миграция модулей
+
+Я бы не переносил все модули одновременно.
+
+Лучше идти по одному модулю.
+
+---
+
+## 6.1. Рекомендуемый порядок
+
+### Вариант A: сначала инфраструктура и наблюдатели
+
+```text
+1. commons/config/logging
+2. kafka/coreclient
+3. kube client
+4. eventswatcher
+5. metricswatcher
+6. resourcewatcher
+7. loglevel
+8. ailogscollector
+9. ottlogswatcher
+10. kubeapi proxy
+```
+
+### Вариант B: сначала самый автономный модуль
+
+Если `kubeapi` хорошо изолирован:
+
+```text
+1. config/http/kube client
+2. kubeapi proxy
+3. kafka/coreclient
+4. eventswatcher
+5. metricswatcher
+6. loglevel
+7. logs collectors
+```
+
+### Вариант C: сначала критичный для production
+
+Нужно выбрать по бизнес-критичности.
+
+Я бы рекомендовал:
+
+```text
+1. core infra
+2. eventswatcher
+3. metricswatcher
+4. kubeapi
+5. loglevel
+6. ailogscollector
+7. ott logs
+```
+
+Почему так:
+
+- `eventswatcher` и `metricswatcher` обычно хорошо проверяются;
+- они дают быстрый feedback;
+- они не обязательно ломают управление;
+- их можно тестировать на реальных кластерах в shadow mode.
+
+---
+
+# 7. Детали по каждому модулю
+
+---
+
+## 7.1. uamc-agent-commons
+
+Перенести:
+
+- errors;
+- utils;
+- constants;
+- config models;
+- validation;
+- time helpers;
+- uuid helpers;
+- retry helpers;
+- context helpers.
+
+В Go:
+
+```text
+internal/platform/errors
+internal/platform/timeutil
+internal/platform/uuidutil
+internal/platform/retry
+```
+
+Важно:
+
+- не копировать Java utils 1-в-1;
+- использовать idiomatic Go;
+- везде пробрасывать `context.Context`.
+
+---
+
+## 7.2. uamc-agent-kubeapi
+
+Это REST proxy к Kubernetes API.
+
+Нужно реализовать:
+
+```text
+HTTP handler -> Kubernetes API request -> response to UI
+```
+
+Варианты реализации:
+
+1. `httputil.ReverseProxy`
+2. Ручной proxy через `client-go`
+3. Комбинация: reverse proxy для raw API + собственные handlers для операций
+
+Если нужно просто проксировать Kubernetes API:
+
+```go
+httputil.NewSingleHostReverseProxy(apiServerURL)
+```
+
+Но нужно аккуратно обработать:
+
+- Authorization;
+- Bearer token;
+- client certificates;
+- impersonation;
+- namespace restrictions;
+- watch streaming;
+- websocket, если есть;
+- errors;
+- timeouts.
+
+Вопросы:
+
+```text
+UI работает с raw Kubernetes API или с упрощённым API агента?
+Есть ли собственная модель доступа?
+Нужен ли namespace filtering?
+Нужны ли watch endpoints?
+```
+
+---
+
+## 7.3. uamc-agent-eventswatcher
+
+Нужно реализовать сбор Kubernetes events.
+
+Варианты:
+
+1. Watch events через client-go.
+2. Informers.
+3. List + watch.
+4. Event recorder API.
+
+Рекомендация:
+
+```text
+SharedInformerFactory + event informer
+```
+
+Нужно обработать:
+
+- resourceVersion;
+- reconnect;
+- resync;
+- duplicates;
+- event deduplication;
+- batch sending;
+- filtering;
+- correlation with cluster/namespace/object;
+- sending to Kafka.
+
+---
+
+## 7.4. uamc-agent-metricswatcher
+
+Нужно понять, откуда собираются метрики:
+
+- metrics-server;
+- Prometheus;
+- kubelet stats;
+- Kubernetes metrics API;
+- custom endpoints.
+
+В Go:
+
+```text
+client-go для metrics.k8s.io
+prometheus/client_golang для экспорта
+HTTP client для scrape
+```
+
+Нужно реализовать:
+
+- collection interval;
+- timeout;
+- retry;
+- batching;
+- normalization;
+- sending to Kafka or core.
+
+---
+
+## 7.5. uamc-agent-loglevel
+
+Модуль управления уровнями логирования.
+
+Нужно перенести:
+
+```text
+LLService
+LLCache
+UpdateLLCacheController
+LLController
+```
+
+Особенности:
+
+- double check через `LLCache.updateNewRequest()`;
+- cache актуальности;
+- запросы в ядро;
+- применение уровней к Tengri или другим компонентам.
+
+В Go:
+
+```go
+type LogLevelService struct {
+    cache      *LLCache
+    coreClient CoreClient
+    logger     *slog.Logger
+    mu         sync.Mutex
+}
+```
+
+Нужно явно реализовать:
+
+```text
+check cache
+if stale -> request core
+update cache
+apply level
+```
+
+---
+
+## 7.6. uamc-agent-ailogscollector
+
+Нужно перенести:
+
+```text
+AiLogsCollectorCollectLogsController
+AiLogsCollectorGetPodsController
+```
+
+Функции:
+
+- получение pods;
+- сбор логов;
+- фильтрация;
+- отправка в S3 или Kafka;
+- архивация;
+- статусы сбора.
+
+В Go:
+
+```text
+client-go PodLogs API
+S3 client
+batcher
+worker pool
+```
+
+Нужно обработать:
+
+- pod logs streaming;
+- tail lines;
+- since time;
+- container selection;
+- previous logs;
+- large logs;
+- timeouts;
+- cancellation;
+- partial failures.
+
+---
+
+## 7.7. uamc-agent-ottlogswatcher / ottlogstruewatcher
+
+Нужно понять, как собираются OTT-логи:
+
+1. Через Kubernetes pod logs API.
+2. Через файлы внутри pod/sidecar.
+3. Через shared volume.
+4. Через syslog/stdout.
+5. Через отдельный протокол.
+
+Если файлы:
+
+```text
+fsnotify
+tail
+log rotation handling
+```
+
+Если pod logs:
+
+```text
+client-go logs follow
+```
+
+Нужно реализовать:
+
+```text
+start watching
+stop watching
+buffering
+batching
+sending
+state persistence
+```
+
+Особенно важно:
+
+- не терять логи при рестарте;
+- не дублировать слишком много;
+- обрабатывать rotation;
+- обрабатывать large lines;
+- обрабатывать backpressure.
+
+---
+
+## 7.8. uamc-agent-resourcewatcher
+
+Нужно реализовать watcher ресурсов.
+
+В Go:
+
+```text
+informers
+listers
+event handlers
+```
+
+Пример:
+
+```go
+informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+    AddFunc:    ...,
+    UpdateFunc: ...,
+    DeleteFunc: ...,
+})
+```
+
+Нужно обработать:
+
+- resync period;
+- delete tombstones;
+- update old/new;
+- watch errors;
+- initial list;
+- resource version too old;
+- re-list.
+
+---
+
+# 8. REST API на Go
+
+Выбор фреймворка:
+
+| Вариант | Когда использовать |
+|---|---|
+| `net/http` + `chi` | если нужен лёгкий идиоматичный Go |
+| `echo` | если нужен удобный middleware layer |
+| `gin` | если команда привыкла к gin |
+| `fiber` | если нужна высокая производительность, но это менее идиоматично |
+| `grpc-gateway` | если REST генерируется из gRPC |
+
+Рекомендация:
+
+```text
+chi + net/http
+```
+
+Почему:
+
+- стандартный `net/http`;
+- простой middleware;
+- легко тестировать;
+- нет лишней магии.
+
+Нужно реализовать:
+
+- routing;
+- request validation;
+- error mapping;
+- logging middleware;
+- recover middleware;
+- request id;
+- metrics middleware;
+- auth middleware;
+- timeout middleware;
+- CORS, если нужен.
+
+---
+
+# 9. gRPC server на Go
+
+Использовать:
+
+```text
+google.golang.org/grpc
+```
+
+Нужно реализовать:
+
+- server;
+- interceptors;
+- health service;
+- reflection, если нужно;
+- graceful stop;
+- TLS, если нужен;
+- metadata mapping;
+- error codes.
+
+Health check:
+
+```text
+grpc_health_v1
+```
+
+---
+
+# 10. Observability
+
+В Java это, скорее всего, Micrometer/Actuator/Prometheus.
+
+В Go нужно реализовать:
+
+## 10.1. Metrics
+
+Использовать:
+
+```text
+prometheus/client_golang
+```
+
+Метрики:
+
+```text
+kafka messages received
+kafka messages sent
+kafka processing duration
+kafka errors
+request/response latency
+core client timeouts
+cache hit/miss
+watcher restarts
+k8s API errors
+log batches sent
+log batch size
+s3 upload duration
+http request duration
+grpc request duration
+```
+
+## 10.2. Tracing
+
+Использовать:
+
+```text
+OpenTelemetry
+```
+
+Пробрасывать:
+
+```text
+messageId
+correlationId
+requestType
+clusterName
+```
+
+## 10.3. Logging
+
+Structured logging:
+
+```text
+slog/zap
+```
+
+## 10.4. Health
+
+Endpoints:
+
+```text
+/healthz
+/readyz
+/livez
+/metrics
+```
+
+Проверки:
+
+```text
+kafka connectivity
+kubernetes client
+s3 connectivity
+core registration
+module readiness
+```
+
+---
+
+# 11. Concurrency и надёжность
+
+Go даёт простую конкурентность, но нужно аккуратно заменить Java-паттерны.
+
+---
+
+## 11.1. Graceful shutdown
+
+Нужно обработать:
+
+```text
+SIGTERM
+SIGINT
+preStop hook
+context cancellation
+```
+
+Порядок:
+
+```text
+1. Получить сигнал.
+2. Остановить прием новых HTTP/gRPC запросов.
+3. Остановить Kafka consumers.
+4. Дождаться обработки текущих сообщений.
+5. Flush producers.
+6. Закрыть connections.
+7. Завершить процесс.
+```
+
+---
+
+## 11.2. Goroutine leaks
+
+Нужно:
+
+- всегда передавать `context.Context`;
+- всегда иметь способ остановить goroutine;
+- использовать `sync.WaitGroup`;
+- не запускать бесконечные goroutine без shutdown;
+- проверять утечки в тестах через `goleak`.
+
+---
+
+## 11.3. Backpressure
+
+Для Kafka и log batching:
+
+```text
+bounded channels
+worker limits
+drop policy
+retry queue
+circuit breaker
+rate limiter
+```
+
+---
+
+## 11.4. Idempotency
+
+Так как Kafka может давать повторы, нужно обрабатывать:
+
+```text
+messageId
+correlationId
+requestType
+```
+
+Если операция не идемпотентна, нужен deduplication cache или external state.
+
+---
+
+# 12. Тестирование
+
+Это отдельный большой этап.
+
+---
+
+## 12.1. Unit tests
+
+Для:
+
+```text
+config
+protoheaders
+cache
+keyedlock
+batcher
+coreclient pending map
+time utils
+error mapping
+```
+
+---
+
+## 12.2. Contract tests
+
+Самое важное.
+
+Нужно проверить, что Go-агент:
+
+1. Может читать сообщения, отправленные Java-агентом.
+2. Может писать сообщения, которые Java-core понимает.
+3. Использует те же Kafka headers.
+4. Использует ту же protobuf-сериализацию.
+5. Корректно обрабатывает request/response correlation.
+6. Совместим по REST API.
+7. Совместим по gRPC.
+
+Инструменты:
+
+```text
+Go testing
+testcontainers-go
+buf breaking
+OpenAPI validator
+gRPC reflection tests
+golden files
+```
+
+---
+
+## 12.3. Integration tests
+
+Поднять:
+
+```text
+Kafka
+S3 mock / MinIO
+Kubernetes kind/k3d
+mock uamc-core
+```
+
+Проверить:
+
+```text
+consumer startup
+producer sends
+registration
+events watcher
+metrics watcher
+log collection
+S3 upload
+health checks
+graceful shutdown
+```
+
+---
+
+## 12.4. E2E tests
+
+Варианты:
+
+```text
+kind
+k3d
+minikube
+real staging cluster
+```
+
+Проверить:
+
+```text
+Helm deploy
+service account
+RBAC
+Kafka connectivity
+uamc-core interaction
+UI kubeapi proxy
+module enable/disable
+restart behavior
+log rotation
+multi-cluster headers
+```
+
+---
+
+## 12.5. Shadow comparison
+
+Если возможно, запустить:
+
+```text
+Java agent = active
+Go agent = shadow
+```
+
+Но нужно аккуратно с Kafka consumer groups.
+
+Варианты:
+
+1. Отдельный consumer group для Go shadow.
+2. MirrorMaker/Kafka mirroring.
+3. Запись входящих сообщений в test storage и replay.
+4. Canary cluster, где работает только Go.
+
+---
+
+# 13. Deployment и Helm
+
+Сейчас у тебя Helm chart из:
+
+```text
+uamc-agent/helm-k8s
+```
+
+Gradle tasks генерируют Dockerfile и копируют файлы.
+
+В Go лучше сделать проще:
+
+```text
+Dockerfile
+Makefile
+Helm chart
+```
+
+---
+
+## 13.1. Dockerfile
+
+Пример multi-stage:
+
+```dockerfile
+FROM golang:1.24 AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /out/uamc-agent ./cmd/uamc-agent
+
+FROM gcr.io/distroless/static-debian12
+
+COPY --from=build /out/uamc-agent /uamc-agent
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/uamc-agent"]
+```
+
+Если используется `confluent-kafka-go`, может понадобиться `CGO_ENABLED=1` и образ с `librdkafka`.
+
+Тогда лучше:
+
+```dockerfile
+FROM golang:1.24 AS build
+RUN apt-get update && apt-get install -y librdkafka-dev
+...
+```
+
+И runtime:
+
+```dockerfile
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y librdkafka1
+...
+```
+
+Если выбрать `franz-go` или `segmentio/kafka-go`, можно собрать полностью статический binary.
+
+---
+
+## 13.2. Helm
+
+Нужно перенести:
+
+```text
+image
+env
+secrets
+service account
+RBAC
+ports
+probes
+resources
+configMap
+volume mounts
+tolerations
+nodeSelector
+affinity
+securityContext
+```
+
+Особенно важно:
+
+```text
+S3CLOUD_ACCESS_KEY_ID
+S3CLOUD_SECRET_ACCESS_KEY
+cluster-id
+cluster-name
+modules enabled
+kafka bootstrap servers
+```
+
+---
+
+# 14. Стратегия перехода
+
+Я бы не заменял Java-агент на Go сразу везде.
+
+---
+
+## 14.1. Рекомендуемая схема
+
+### Шаг 1. Freeze Java features
+
+Заморозить функциональность Java-агента, кроме bugfix.
+
+### Шаг 2. Build Go skeleton
+
+Сделать пустой сервис с:
+
+```text
+config
+logging
+health
+metrics
+http
+grpc
+kafka
+k8s client
+```
+
+### Шаг 3. Contract compatibility
+
+Добиться, чтобы Go-сервис:
+
+```text
+понимал входящие protobuf-сообщения;
+умел отправлять корректные ответы;
+проходил contract tests.
+```
+
+### Шаг 4. Enable one module
+
+Например:
+
+```text
+eventswatcher
+```
+
+Запустить в test cluster.
+
+### Шаг 5. Shadow mode
+
+Если возможно, запустить Go-агент в shadow mode:
+
+```text
+Java agent продолжает обрабатывать запросы.
+Go agent только наблюдает и пишет метрики/логи сравнения.
+```
+
+### Шаг 6. Canary cluster
+
+Выбрать один некритичный кластер:
+
+```text
+Java agent выключен.
+Go agent включён.
+```
+
+### Шаг 7. Gradual rollout
+
+По одному кластеру:
+
+```text
+cluster-1 -> Go
+cluster-2 -> Go
+cluster-3 -> Go
+```
+
+### Шаг 8. Rollback plan
+
+Для каждого кластера должна быть возможность быстро вернуть Java:
+
+```text
+helm rollback
+или смена image tag
+```
+
+---
+
+# 15. Риски и зоны особого внимания
+
+---
+
+## 15.1. Protobuf совместимость
+
+Риск:
+
+```text
+Go и Java могут по-разному работать с enum, timestamp, unknown fields, Any.
+```
+
+Что делать:
+
+```text
+contract tests;
+golden binary messages;
+buf breaking checks;
+проверка Java deserialization.
+```
+
+---
+
+## 15.2. Kafka headers
+
+Риск:
+
+```text
+Не совпадают имена заголовков, кодировка, формат времени.
+```
+
+Что делать:
+
+```text
+снять дамп реальных Kafka messages;
+проверить headers;
+сделать mapper tests.
+```
+
+---
+
+## 15.3. Consumer offsets
+
+Риск:
+
+```text
+Go-агент начнёт читать с неправильного offset или дублировать сообщения.
+```
+
+Что делать:
+
+```text
+тесты commit behavior;
+проверка auto.commit;
+проверка rebalance;
+проверка restart.
+```
+
+---
+
+## 15.4. Kubernetes watch
+
+Риск:
+
+```text
+Потеря событий, duplicate events, resourceVersion too old.
+```
+
+Что делать:
+
+```text
+использовать informers;
+обрабатывать re-list;
+метрики watcher restarts;
+тесты на обрыв соединения.
+```
+
+---
+
+## 15.5. Log collection
+
+Риск:
+
+```text
+потеря логов;
+дубли;
+неправильная ротация;
+огромные строки;
+backpressure.
+```
+
+Что делать:
+
+```text
+batcher tests;
+load tests;
+rotation tests;
+large line tests;
+S3 upload tests.
+```
+
+---
+
+## 15.6. Thread-safety vs goroutines
+
+Риск:
+
+```text
+race conditions, deadlocks, goroutine leaks.
+```
+
+Что делать:
+
+```text
+go test -race;
+goleak;
+pprof;
+load tests;
+chaos tests.
+```
+
+---
+
+# 16. Рекомендуемый backlog миграции
+
+Ниже — примерный backlog.
+
+---
+
+## Milestone 1. Contracts and analysis
+
+```text
+1. Собрать все proto files.
+2. Собрать все Kafka topics.
+3. Собрать все REST endpoints.
+4. Собрать все gRPC services.
+5. Собрать все Helm values.
+6. Собрать все env variables.
+7. Собрать все Spring profiles.
+8. Собрать все module dependencies.
+9. Зафиксировать behavior matrix.
+10. Подготовить contract test plan.
+```
+
+Deliverable:
+
+```text
+migration specification
+```
+
+---
+
+## Milestone 2. Go skeleton
+
+```text
+1. Создать репозиторий.
+2. Настроить go.mod.
+3. Настроить Makefile.
+4. Настроить lint.
+5. Настроить CI.
+6. Добавить config.
+7. Добавить logging.
+8. Добавить health.
+9. Добавить metrics.
+10. Добавить HTTP server.
+11. Добавить gRPC server.
+12. Добавить graceful shutdown.
+```
+
+Deliverable:
+
+```text
+пустой агент запускается в k8s
+```
+
+---
+
+## Milestone 3. Core infrastructure
+
+```text
+1. Protobuf generation.
+2. Kafka producer.
+3. Kafka consumer.
+4. ProtoHeaders mapper.
+5. CoreClient.
+6. Request/response correlation.
+7. TTL cache.
+8. Keyed synchronizer.
+9. S3 client.
+10. Kubernetes client.
+11. Retry/backoff.
+12. Error model.
+```
+
+Deliverable:
+
+```text
+агент может общаться с uamc-core
+```
+
+---
+
+## Milestone 4. First module
+
+Например:
+
+```text
+eventswatcher
+```
+
+Задачи:
+
+```text
+1. Module config.
+2. Module registration.
+3. Kubernetes events informer.
+4. Event normalization.
+5. Kafka sending.
+6. Metrics.
+7. Tests.
+```
+
+Deliverable:
+
+```text
+Go eventswatcher работает в test cluster
+```
+
+---
+
+## Milestone 5. Second module
+
+Например:
+
+```text
+metricswatcher
+```
+
+Deliverable:
+
+```text
+Go metricswatcher работает в test cluster
+```
+
+---
+
+## Milestone 6. Control modules
+
+```text
+loglevel
+kubeapi
+```
+
+Deliverable:
+
+```text
+UI и core могут работать с Go-агентом
+```
+
+---
+
+## Milestone 7. Logs modules
+
+```text
+ailogscollector
+ottlogswatcher
+ottlogstruewatcher
+```
+
+Deliverable:
+
+```text
+logs collection работает на Go
+```
+
+---
+
+## Milestone 8. Production rollout
+
+```text
+1. Load tests.
+2. Chaos tests.
+3. Canary cluster.
+4. Gradual rollout.
+5. Monitoring dashboards.
+6. Alerts.
+7. Runbooks.
+8. Java decommission.
+```
+
+Deliverable:
+
+```text
+production работает на Go-агенте
+```
+
+---
+
+# 17. Минимально разумный первый план
+
+Если нужно начать прямо сейчас, я бы сделал так:
+
+## Sprint 1
+
+```text
+1. Найти все proto files.
+2. Найти все Kafka topics.
+3. Найти все REST/gRPC endpoints.
+4. Выгрузить примеры сообщений.
+5. Подготовить документацию по контрактам.
+```
+
+## Sprint 2
+
+```text
+1. Создать Go repo.
+2. Настроить buf.
+3. Сгенерировать protobuf.
+4. Сделать config/logging/health.
+5. Поднять пустой сервис в k8s.
+```
+
+## Sprint 3
+
+```text
+1. Сделать Kafka consumer/producer.
+2. Сделать ProtoHeaders mapper.
+3. Сделать CoreClient.
+4. Покрыть contract tests.
+```
+
+## Sprint 4
+
+```text
+1. Перенести eventswatcher.
+2. Запустить в test cluster.
+3. Сравнить события с Java-агентом.
+```
+
+## Sprint 5
+
+```text
+1. Перенести metricswatcher.
+2. Запустить в test cluster.
+3. Сравнить метрики.
+```
+
+## Sprint 6
+
+```text
+1. Перенести kubeapi.
+2. Проверить UI.
+```
+
+## Sprint 7
+
+```text
+1. Перенести loglevel.
+2. Перенести logs collectors.
+```
+
+## Sprint 8
+
+```text
+1. Canary.
+2. Production rollout.
+```
+
+---
+
+# 18. Вопросы, на которые нужно ответить
+
+Чтобы я мог дать более точный план и приоритизацию, ответь, пожалуйста, на следующие вопросы.
+
+---
+
+## 18.1. Общая цель
+
+1. Нужен полный перенос 1-в-1 или можно упростить архитектуру?
+2. Можно ли менять внешние контракты?
+3. Нужна ли полная backward compatibility с `uamc-core`?
+4. Допускается ли параллельная работа Java и Go агентов?
+5. Есть ли срок миграции?
+6. Есть ли команда, знакомая с Go?
+
+---
+
+## 18.2. Java/Spring
+
+1. Какая версия Java?
+2. Какая версия Spring Boot?
+3. Используется ли Spring WebFlux или только Spring MVC?
+4. Используется ли Spring Cloud?
+5. Как именно реализованы профили?
+6. Где находятся все `AppConfig`?
+7. Как работает `validateSources`?
+8. Есть ли кастомные annotation processors?
+
+---
+
+## 18.3. Kafka
+
+1. Какой Kafka client используется в Java?
+   - `spring-kafka`?
+   - `kafka-clients`?
+   - `reactor-kafka`?
+2. Какие consumer groups используются?
+3. Один ли агент имеет один consumer group?
+4. Как обрабатывается rebalance?
+5. Как коммитятся offsets?
+6. Есть ли ручные commit?
+7. Есть ли dead letter topics?
+8. Есть ли retry topics?
+9. Есть ли идемпотентная обработка сообщений?
+10. Можно ли получить примеры реальных Kafka-сообщений?
+
+---
+
+## 18.4. Protobuf
+
+1. Где лежат `.proto` файлы?
+2. Используется ли `Any`?
+3. Используется ли `google.protobuf.Timestamp` или строка?
+4. Как передаются заголовки:
+    - Kafka headers;
+    - внутри protobuf;
+    - и там, и там?
+5. Есть ли версионирование сообщений?
+6. Есть ли backward compatibility tests?
+
+---
+
+## 18.5. Kubernetes
+
+1. Какие версии Kubernetes/OpenShift используются?
+2. Используется ли in-cluster config?
+3. Есть ли kubeconfig fallback?
+4. Какие ресурсы агент имеет право читать/писать?
+5. Есть ли ClusterRole/Role?
+6. Используется ли leader election?
+7. Есть ли multi-cluster?
+8. Как определяется `cluster-id`?
+9. Как определяется `cluster-name`?
+10. Есть ли доступ к metrics-server?
+11. Есть ли Prometheus?
+
+---
+
+## 18.6. REST API
+
+1. Есть ли OpenAPI/Swagger?
+2. Какие endpoints использует `uamc-ui`?
+3. Есть ли авторизация на REST API?
+4. Используется ли JWT?
+5. Используется ли OAuth?
+6. Есть ли CORS?
+7. Есть ли streaming/watch через REST?
+8. Есть ли websocket?
+
+---
+
+## 18.7. gRPC
+
+1. Где лежат gRPC proto files?
+2. Какие сервисы предоставляет агент?
+3. Какие клиенты вызывают gRPC?
+4. Используется ли TLS?
+5. Используется ли gRPC health check?
+6. Есть ли streaming?
+
+---
+
+## 18.8. S3
+
+1. S3cloud полностью совместим с AWS S3 API?
+2. Используется ли MinIO SDK в Java?
+3. Используется ли AWS SDK?
+4. Какие операции нужны:
+   - upload;
+   - download;
+   - delete;
+   - list;
+   - presigned URL?
+5. Есть ли multipart upload?
+6. Есть ли lifecycle rules?
+7. Нужны ли custom CA certificates?
+
+---
+
+## 18.9. Логи
+
+1. Как собираются AI logs:
+   - pod logs API;
+   - файлы;
+   - sidecar;
+   - S3?
+2. Как собираются OTT logs?
+3. Есть ли ротация файлов?
+4. Есть ли ограничения по размеру?
+5. Нужна ли доставка exactly-once?
+6. Допустимы ли дубли?
+7. Допустимы ли потери?
+8. Есть ли буферизация на диске?
+
+---
+
+## 18.10. Deployment
+
+1. Используется ли Helm 3?
+2. Есть ли OpenShift templates?
+3. Какие probes есть сейчас?
+4. Какие resources requests/limits?
+5. Есть ли sidecar pattern?
+6. Как сейчас обновляется агент?
+7. Можно ли быстро откатиться?
+8. Есть ли staging cluster для тестов?
+
+---
+
+# 19. Моя рекомендация
+
+Я бы строил миграцию так:
+
+```text
+Не переписывать весь Java-проект сразу.
+Сначала зафиксировать контракты.
+Потом сделать Go-скелет.
+Потом реализовать Kafka/CoreClient.
+Потом переносить модули по одному.
+```
+
+Оптимальный первый целевой набор:
+
+```text
+1. config
+2. logging
+3. health/metrics
+4. kafka
+5. protobuf
+6. coreclient
+7. kubernetes client
+8. eventswatcher
+```
+
+После этого уже:
+
+```text
+metricswatcher
+kubeapi
+loglevel
+ailogscollector
+ott logs
+resourcewatcher
+```
+
+Главный критерий успеха:
+
+```text
+Go-агент должен быть незаметной заменой Java-агента для uamc-core, uamc-ui и Kubernetes.
+```
+
+То есть сначала контракты, потом архитектура, потом модули, потом rollout.
+
+### USER
+Вот еще несколько UML диаграмм как все должно работать:
+Обнови данные с их учетом.
+
+@startuml OttLogTrueWatcher_Initialization
+
+title Инициализация приложения (Spring Boot Startup)
+
+actor "Spring Boot\n(OTTLOGSWTRUE)" as Spring
+participant "OttLogTrueWatcherAppConfig" as Config
+participant "OttLogTrueSender" as Sender
+participant "OttLogTrueParserResolver" as Parser
+participant "OttLogTrueScheduler" as Scheduler
+participant "Kafka\nConfiguration" as Kafka
+
+Spring -> Config : @Import OttLogTrueWatcherAppConfig
+activate Config
+
+Config -> Config : @Profile(UamcProfiles.OTTLOGSWTRUE)
+Config -> Config : @Import(InKafkaConfiguration, OutKafkaConfiguration, CommonServicesConfig)
+
+Config -> Kafka : Инициализация Kafka consumers/producers
+activate Kafka
+Kafka -->> Config : OK Kafka ready
+deactivate Kafka
+
+Config -> Sender : new OttLogTrueSender(OUTRequestSender)
+activate Sender
+Sender -->> Config : OttLogTrueSender (singleton)
+deactivate Sender
+
+Config -> Parser : new OttLogTrueParserResolver()
+activate Parser
+Parser -> Parser : Enum values(V01, DEFAULT)
+Parser -->> Config : OttLogTrueParserResolver (singleton)
+deactivate Parser
+
+Config -> Config : new NamespaceService(ClientProvider)
+Config -> Config : new OttLogTrueConfigProvider(OUTRequestSender, KafkaConfigProps)
+Config -> Config : new OttLogTrueWatcherService(NamespaceService, ObjectProvider)
+
+Config -> Config : @Bean OttLogTrueScheduler (conditional)
+Note over Config,Sender : if uamc.ottlogstrue-watcher.monitor-scheduler.disable != true
+Config -> Scheduler : new OttLogTrueScheduler(WatcherService, ConfigProvider)
+activate Scheduler
+Scheduler -> Scheduler : @Scheduled(initialDelay, fixedDelay, MINUTES)
+Scheduler -->> Config : OttLogTrueScheduler (singleton, conditional)
+deactivate Scheduler
+
+Config -->> Spring : Все бэны созданы
+deactivate Config
+
+@enduml
+
+@startuml OttLogTrueWatcher_Scheduler
+
+title Планировщик — основной цикл (Scheduled Restart)
+
+actor "Clock\n(@Scheduled N min)" as Clock
+participant "OttLogTrueScheduler" as Scheduler
+participant "OttLogTrueConfigProvider" as ConfigProvider
+participant "Kafka\n(uamc-ottlogstrue-consumer)" as Kafka
+participant "OttLogTrueConfigResponseConverter" as Converter
+participant "OttLogTrueWatcherService" as Service
+participant "NamespaceService" as NamespaceSvc
+participant "OttLogTrueNamespaceCollector" as Collector
+participant "K8s API\n(Namespace)" as K8sNS
+
+group первый запуск (config == null)
+    Clock -> Scheduler : fixedDelay restartWatchers()
+    activate Scheduler
+    Scheduler -> ConfigProvider : getConfig()
+    activate ConfigProvider
+    ConfigProvider -> ConfigProvider : build OttLogTrueConfigRequest(clusterName)
+    ConfigProvider -> ConfigProvider : ProtoHeaders(messageId, topic, addressee)
+    ConfigProvider -> Kafka : doRequest(headers, configRequest)
+    activate Kafka
+    Kafka -->> ConfigProvider : OttLogTrueConfigResponse (proto)
+    deactivate Kafka
+    ConfigProvider -> Converter : convert(response)
+    activate Converter
+    Note over Converter : scanPeriod, sidecarMask,\nreplyTopicEvents, healthcheckPeriod,\nnamespacesOfCluster
+    Converter -->> ConfigProvider : OttLogTrueConfigDto
+    deactivate Converter
+    ConfigProvider -> ConfigProvider : compareAndSet(null, config)\n[атомарно, один раз]
+    ConfigProvider -->> Scheduler : OttLogTrueConfigDto OK
+    deactivate ConfigProvider
+end
+
+Scheduler -> Service : start(config)
+activate Service
+
+loop For each namespace in config.namespacesOfCluster
+    Service -> Service : workers.get(namespace) — check duplicate
+    alt namespace already running
+        Service -->> Service : continue (skip)
+    else namespace not running
+        Service -> K8sNS : getStandCI(namespace)
+        activate K8sNS
+        K8sNS -->> Service : Namespace object
+        deactivate K8sNS
+
+        Service -> NamespaceSvc : getStandCI(namespace)
+        activate NamespaceSvc
+        NamespaceSvc -> K8sNS : client.namespaces().withName(ns).get()
+        activate K8sNS
+        K8sNS -->> NamespaceSvc : ns.metadata.labels
+        deactivate K8sNS
+        NamespaceSvc -> NamespaceSvc : label access.firepaws.io/stand
+
+        alt label found
+            NamespaceSvc -->> Service : Optional<String>(standCI)
+        else label not found
+            NamespaceSvc -->> Service : Optional.empty()
+            Service -> Service : WARN — No Stand CI, skip
+        end
+        deactivate NamespaceSvc
+
+        Service -> Service : ottNamespaceLogCollectors.getObject()\n[PROTOTYPE — новый экземпляр]
+        activate Collector
+        Note over Service,Collector : Новый prototype-бэн\nдля каждого namespace
+
+        Service -> Collector : start(namespaceConfigDto, workers::remove)
+        activate Collector
+        Collector -->> Service : Collector started
+        deactivate Collector
+        deactivate Collector
+
+        Service -> Service : workers.put(namespace, collector)
+    end
+end
+
+Service -->> Scheduler : All namespaces started
+deactivate Service
+Scheduler -->> Clock : Cycle complete
+deactivate Scheduler
+
+@enduml
+
+@startuml OttLogTrueWatcher_NamespaceCollector
+
+title Namespace Collector — работа с подами и sidecar-ами
+
+participant "OttLogTrueNamespaceCollector" as Collector
+participant "OttLogTruePodsService" as PodsSvc
+participant "K8s API\n(Pods List + Informer)" as K8sPods
+participant "OttLogTrueSidecarProcessor" as Processor
+participant "OttLogTrueSidecarWatcher" as Watcher
+participant "BlockingQueue\nOttLogTrueBucket" as Queue
+participant "OttLogTrueSendBuffer" as Buffer
+participant "OttLogTrueSender" as Sender
+
+Collector -> Collector : start(config, onCompletion)
+
+Processor->Processor: start(namespaceConfig)
+activate Processor
+Processor -> Processor : queue = LinkedBlockingQueue(1000)
+Processor -> Processor : executor.submit(startInternal)\n[парсер-поток запущен]
+Note right of Processor : Парсер-поток запущен
+deactivate Processor
+
+Collector -> K8sPods : pods().inNamespace(ns).list()
+activate K8sPods
+K8sPods -->> Collector : List<Pod>
+deactivate K8sPods
+
+Collector -> PodsSvc : getPods(client, ns, sidecarMask)
+activate PodsSvc
+PodsSvc -> PodsSvc : filterByContainerName(pod, mask)\n[Проверка по pattern cache]
+PodsSvc -->> Collector : List<Pod> filtered
+deactivate PodsSvc
+
+loop For each existing pod
+    Collector -> Collector : detectOttSidecar(pod)\n[parentObjectInfoOf(pod)\nbuild OttSidecarDto]
+    activate Collector
+    Collector -> Collector : parentObjectInfoOf(pod)\n→ deploymentUnit + kind
+    Collector -> Collector : build OttSidecarDto(sidecarKey)\n[namespace, pod, container, deployment]
+    Collector -->> Collector : OttSidecarDto(sidecarKey)
+    deactivate Collector
+
+    Collector -> Collector : completedSidecars.contains(key)\n[deduplication]
+    Collector -> Collector : runnedWatchers.containsKey(key)\n[deduplication]
+
+    alt not deduplicated
+        Collector -> Watcher : getObject() [PROTOTYPE]
+        activate Watcher
+        Collector -> Watcher : start(config, onCompletion, queue)
+        activate Watcher
+        Watcher -> Watcher : CompletableFuture.runAsync(startInternal)\n[async Executor]
+        Note right of Watcher : Поток чтения логов запущен
+        Watcher -->> Collector : CompletableFuture<Void>
+        deactivate Watcher
+        deactivate Watcher
+
+        Collector -> Collector : watchersFutures.add(future)
+        Collector -> Collector : runnedWatchers.put(key, watcher)
+    end
+end
+
+Collector -> K8sPods : pods().inNamespace(ns).runnableInformer(resyncMs)
+activate K8sPods
+K8sPods -->> Collector : RunnableResourceInformer<Pod>
+deactivate K8sPods
+
+Collector -> Collector : addEventHandler(ResourceEventHandler<Pod>)
+Note over Collector : onAdd → waitReady → runWatch\nonUpdate → log only\ndelete → no-op
+
+Collector -> Collector : start()
+Note over Collector : Informer запущен
+
+loop Waiting loop
+    Collector -> Collector : !runnedWatchers.isEmpty() && !stopWatching
+    Collector -> Collector : CompletableFuture.allOf(futures).get(500ms)\n[polling каждые 500мс]
+end
+
+alt completion
+    Collector -> K8sPods : informer.close()
+    activate K8sPods
+    K8sPods -->> Collector : Closed
+    deactivate K8sPods
+    Collector -> onCompletion : accept(namespace)
+    Note over Collector : workers.remove(namespace)
+    Collector -> Collector : isWatching = false
+end
+
+@enduml
+
+
+@startuml OttLogTrueWatcher_SidecarWatcher
+
+title Sidecar Watcher - чтение логов (с детализацией)
+
+participant Watcher as "OttLogTrueSidecarWatcher"
+participant Health as "Healthcheck\nScheduler"
+participant K8sLogs as "K8s API\n(tailingLines)"
+participant Queue as "BlockingQueue\nOttLogTrueBucket"
+participant LogBuffer as "List<String>\n(logBuffer)"
+participant Config as "OttLogTrueSidecarConfigDto"
+participant OnComplete as "onCompletion"
+
+' ====== SEQUENCE START ======
+Watcher -> Config : watchOttSidecarConfig.get()
+activate Watcher
+
+' ====== PHASE 1: Healthcheck Scheduler ======
+Health -> Queue : scheduleAtFixedRate(healthCheck, period)\n[every healthcheckPeriodSecs]
+activate Health
+loop Каждые healthcheckPeriodSecs
+    Health -> Health : build OttLogTrueBucket.builder()\n    .config = Config\n    .received = now()\n    .lines = new String[]{}\n    .healthcheckRecord = true
+    Health -> Queue : put(healthCheck bucket)
+    Note right of Health : Empty bucket,\nhealthcheckRecord=true\n(heartbeat)
+end
+deactivate Health
+
+' ====== PHASE 2: Main Log Reading ======
+K8sLogs -> K8sLogs : tailingLines(1000).watchLog()\n[start from line 1000]
+activate K8sLogs
+K8sLogs -->> Watcher : LogWatch (InputStream)
+deactivate K8sLogs
+Watcher -> Watcher : BufferedReader reader\n[new BufferedReader(InputStreamReader)]
+
+loop while ((line = reader.readLine()) != null && !stopWatching)
+    Watcher -> Watcher : check auto-stop:\nscanPeriodFromStartPodSeconds\nelapsed?
+    alt timeout expired
+        Watcher -> Watcher : stopWatching = true\nbreak loop
+    end
+    
+    Watcher -> Watcher : checkLoggerName(line, startLoggerLines)\n[Pattern.matcher(line).matches()]\n[cached pattern]
+    Note right of Watcher : startLoggerLines = true\nif line matches\ncheckLoggerNameRegex
+    
+    alt startLoggerLines == true
+        Note over Watcher,LogBuffer : START OF LOG -\nfirst line of new bucket
+        Watcher -> Watcher : bucketCreated = now()
+        alt amAlreadyInBuffer == true
+            Watcher -> Watcher : closeBuffer(logBuffer, queue, bucketCreated)\n    build OttLogTrueBucket\n    logBuffer.clear()\n    amAlreadyInBuffer = false
+            Note right of Watcher : put(bucket in Queue)
+        end
+        Watcher -> LogBuffer : add(line)
+        Note left of LogBuffer : logBuffer.size = 1
+    else startLoggerLines == false
+        alt amAlreadyInBuffer == true
+            Watcher -> LogBuffer : add(line)\n[continue current log]
+            Note left of LogBuffer : logBuffer.size++
+        else amAlreadyInBuffer == false
+            Watcher -> Watcher : line ignored\n[not a log line]
+            Note right of Watcher : skip,\nwaiting for regex match
+        end
+    end
+    
+    Watcher -> Watcher : amAlreadyInBuffer = startLoggerLines
+    
+    Watcher -> LogBuffer : bufferIsFull(size == 2)?
+    alt buffer full
+        Watcher -> Watcher : closeBuffer(logBuffer, queue, bucketCreated)\n    build OttLogTrueBucket\n    logBuffer.clear()\n    amAlreadyInBuffer = false
+        Note right of Watcher : put(bucket in Queue)
+        Watcher -> Queue : put(OttLogTrueBucket{config, lines[], received})
+        Note right of Queue : Bucket sent\nto BlockingQueue
+    end
+end
+
+' ====== PHASE 3: Final ======
+Note over Watcher : LOOP FINISHED
+alt amAlreadyInBuffer == true
+    Watcher -> Watcher : closeBuffer(final)\n    put remaining lines\n    logBuffer.clear()
+    Watcher -> Queue : put(final bucket)
+end
+
+Watcher -> K8sLogs : watch.close()
+K8sLogs -->> Watcher : Closed
+activate K8sLogs
+
+Watcher -> OnComplete : accept(sidecarKey)
+Note right of Watcher : runnedWatchers.remove(key)\ncompletedSidecars.add(key)\nhealthcheckScheduler.shutdown()
+
+@enduml
+
+@startuml OttLogTrueWatcher_SidecarProcessor
+
+title Sidecar Processor — парсинг и отправка (с детализацией)
+
+participant "BlockingQueue\nOttLogTrueBucket" as Queue
+participant "OttLogTrueSidecarProcessor" as Processor
+participant "OttLogTrueParserResolver" as Resolver
+participant "OttLogTrueParserV1Impl" as Parser
+participant "OttLogTrueSendBuffer" as Buffer
+participant "OttLogTrueSender" as Sender
+participant "OUTRequestSender\n(Kafka)" as K8sSender
+
+Processor -> Processor : startInternal()\n[parser thread — single executor]
+
+loop while (!stopParsing && !Thread.interrupted())
+    Processor -> Queue : take()\n[blocking — ожидание бакета]
+    activate Queue
+    Queue -->> Processor : OttLogTrueBucket\n{config, lines[], received, healthcheck}
+    deactivate Queue
+    Processor -> Processor : processInternal(bucket)
+
+    Processor -> Resolver : getParser(bucket)\n[Strategy Pattern: V01, DEFAULT]
+    activate Resolver
+    loop for each OttLogTrueParserVersion\n[V01 → OttLogTrueParserV1Impl\nDEFAULT → OttLogTrueParserDefaultImpl]
+        Resolver -> Parser : isSupported(bucket)\n[String.join(" ", lines)]
+        alt XACML header detected:\nCategory=urn:oasis:names:tc:xacml:1.0:subject-category:access-subject
+            Parser -->> Resolver : OK true
+        else no XACML header
+            Parser -->> Resolver : false
+        end
+    end
+    Resolver -->> Processor : OttLogTrueParser (V1Impl)
+    deactivate Resolver
+
+    Processor -> Processor : currentRec = new OttLogTrueRecord(\nconfig, healthcheckRecord)\n[event = new OttLogTrueEvent()]
+    Note right of Processor : OttLogTrueRecord:\n  config = OttLogTrueSidecarConfigDto\n  healthcheck = boolean\n  event = OttLogTrueEvent()\n    - result (PERMIT/DENY/UNKNOWN)\n    - method, path, host,\n      moduleIdProvider, moduleIdConsumer,\n      received
+
+    Processor -> Parser : parseBucketAndHandle(logBucket, currentRec)\n[Strategy: вызов V1Impl]
+    activate Parser
+
+    Parser -> Parser : logLines = String.join(" ", lines)\n[объединение строк бакета в одну строку]
+
+    Parser -> Parser : detectResult(logLines)\n[regex для PERMIT/DENY/UNKNOWN]
+    Note over Parser : detectResult:\n  PERMIT: (Result: 'Result\()|(Decision=Permit)\n  DENY: (Result: 'Deny')|('Deny')|(Decision=Deny)\n  else: UNKNOWN
+
+    Parser -> Parser : Set.of(PERMIT, DENY).contains(result)?
+    alt result == PERMIT или DENY
+        Parser -> Parser : event.setReceived(bucket.received)
+
+        Parser -> Parser : event.setModuleIdProvider(\n  extractModuleIdProviderUni(logLines))\n[extract: module_id: '...']
+        Note right of Parser : extractModuleIdProviderUni:\n  Pattern: module_id: 'value'\n  shiftLeft=12, shiftRight=-1
+
+        alt moduleIdProvider пуст → fallback
+            Parser -> Parser : extractModuleIdProvider(\n  logLines)\n[extract: recipient-subject{[[...]]}]
+            Note right of Parser : extractModuleIdProvider:\n  Pattern: recipient-subject{[[value]]}
+        end
+
+        Parser -> Parser : event.setHost(\n  extractHost(logLines))\n[extract: host: '...']
+        Note right of Parser : extractHost:\n  Pattern: host: 'value'\n  shiftLeft=7, shiftRight=-1
+
+        Parser -> Parser : event.setModuleIdConsumer(\n  extractModuleIdConsumer(logLines))\n[extract: access-subject{[[...]]}]
+        Note right of Parser : extractModuleIdConsumer:\n  Pattern: access-subject{[[value]]}
+
+        Parser -> Parser : event.setPath(\n  extractPath(logLines))\n[extract: api:interface:fullname{[[...]]}]
+        Note right of Parser : extractPath:\n  Pattern: api:interface:fullname{[value]}
+
+        Parser -> Parser : event.setMethod(\n  extractMethod(logLines))\n[Pattern: names:http:method,...{[(GET)]}]
+        Note right of Parser : extractMethod:\n  Pattern: names:http:method,Category={[(GET|POST|...)]}\n  group(1) = метод HTTP
+
+        Parser -->> Processor : record.event {\n  result: PERMIT|DENY,\n  method: GET|POST|...,\n  path: /api/v1/..., \n  host: '...','\n  moduleIdProvider: '...',\n  moduleIdConsumer: '...',\n  received: LocalDateTime}\n}
+
+    else result == UNKNOWN\n[нет XACML или нет результата]
+        Parser -->> Processor : record.event {\n  result: UNKNOWN,\n  все поля пустые}
+    end
+    deactivate Parser
+
+    Processor -> Processor : isNotEmpty(event.moduleIdProvider)\n  && isNotEmpty(event.method)\n  && isNotEmpty(event.moduleIdConsumer)\n  && isNotEmpty(event.path)\n  OR healthcheckRecord
+    alt все поля заполнены ИЛИ healthcheck
+        Processor -> Buffer : submit(record)\n[SubmissionPublisher → buffer]
+        Note over Buffer : SubmissionPublisher\nbuffer size=30, timeout=30s
+    else поля пустые ИЛИ не healthcheck
+        Processor -> Processor : record проигнорирован\n[не отправляем в Kafka]
+        Note right of Processor : Не все поля заполнены\n→ не отправляем (пустой XACML)
+    end
+end
+
+par Send Buffer flush (internal)
+    Buffer -> Buffer : flush()\n[batch from buffer — max 30 или timeout 30s]
+    Buffer -> Sender : send(List<OttLogTrueRecord>)
+    activate Sender
+    Sender -> Sender : groupingBy(OttLogTrueRecord::getConfig)\n[группировка по sidecar (namespace/pod/container)]
+    loop For each group (sidecar)
+        Sender -> Sender : sendPacket(config, records)\n[для каждой группы отдельно]
+        Sender -> Sender : build OttLogTrueSidecarBucket.newBuilder()\naddAllEvent(records → OttLogTrueSidecarEvent[])
+        Note right of Sender : OttLogTrueSidecarEvent:\n  - healthcheckRecord\n  - standType, standCI, cluster\n  - project(namespace), deploymentUnitKind,\n    deploymentUnitName\n  - pod, container\n  - event: received, requestResult,\n    requestPath, RequestMethod,\n    moduleIdProvider, moduleIdConsumer
+        Sender -> Sender : build ProtoHeaders(\n  messageId=UUID.randomUUID(),\n  topic=config.replyTopicEvents,\n  addressee=uamc-ottlogstrue-consumer,\n  zipped=true,\n  timestamp=now())
+        Sender -> K8sSender : doRequestVoid(headers, bucketProto)\n[Kafka producer]
+        activate K8sSender
+        K8sSender -->> Sender : OK Sent to Kafka\n[zipped Proto]
+        deactivate K8sSender
+    end
+    Sender -->> Buffer : Batch sent
+    deactivate Sender
+end
+
+@enduml
+
+@startuml OttLogTrueWatcher_EndToEnd
+
+title Полный End-to-End поток (от конфигурации до Kafka)
+
+participant "OttLogTrueScheduler" as Scheduler
+participant "OttLogTrueConfigProvider" as ConfigProvider
+participant "Kafka\n(request/response config)" as KafkaReq
+participant "OttLogTrueWatcherService" as Service
+participant "K8s API\n(Namespace)" as K8sNS
+participant "OttLogTrueNamespaceCollector" as Collector
+participant "K8s API\n(Pods)" as K8sPods
+participant "OttLogTruePodsService" as PodsSvc
+participant "OttLogTrueSidecarProcessor" as Processor
+participant "OttLogTrueSidecarWatcher" as Watcher
+participant "K8s API\n(Container Logs)" as K8sLogs
+participant "BlockingQueue\nOttLogTrueBucket" as Queue
+participant "OttLogTrueParserV1Impl" as Parser
+participant "OttLogTrueSendBuffer" as Buffer
+participant "OUTRequestSender\n(Kafka)" as KafkaSend
+participant "uamc-ottlogstrue-consumer" as Consumer
+
+group PHASE 1: CONFIGURATION
+    Scheduler -> ConfigProvider : getConfig()\n[только один раз, кэшируется]
+    ConfigProvider -> ConfigProvider : build OttLogTrueConfigRequest(clusterName)
+    ConfigProvider -> KafkaReq : doRequest(headers, configRequest)\n[Proto: OttLogTrueConfigRequest]
+    KafkaReq -->> ConfigProvider : OttLogTrueConfigResponse\n[namespacesOfCluster, scanPeriod, sidecarMask, healthcheckPeriod]
+    ConfigProvider -> ConfigProvider : convert → OttLogTrueConfigDto
+    ConfigProvider -->> Scheduler : config {namespaces, mask, periods}
+end
+
+group PHASE 2: NAMESPACE WATCHERS
+    Scheduler -> Service : start(config)
+    Service -> K8sNS : getStandCI(namespace)
+    K8sNS -->> Service : label access.firepaws.io/stand
+    Service -> Service : collectors.getObject() [PROTOTYPE per ns]
+    Service -> Collector : start(namespaceConfig, onCompletion)
+    Collector -> Processor : start(namespaceConfig)
+    Note right of Collector : Parser thread запущен\nqueue = LinkedBlockingQueue(1000)
+end
+
+group PHASE 3: POD DISCOVERY
+    Collector -> K8sPods : pods().inNamespace(ns).list()\n[получить все поды в namespace]
+    K8sPods -->> Collector : List<Pod>
+    Collector -> PodsSvc : getPods(filtered, mask)\n[filterByContainerName(pod, sidecarMask)]
+    PodsSvc -->> Collector : List<Pod> [sidecar containers]
+
+    loop For each pod with sidecar
+        Collector -> Collector : detectOttSidecar(pod)\n[build OttSidecarDto]\n[namespace, pod, container,\n deploymentUnit + kind]
+        Collector -> Watcher : getObject() [PROTOTYPE]
+        Watcher -> Queue : start(config, callback, queue)
+        Note over Watcher : Поток чтения логов\nзапущен async
+    end
+end
+
+group PHASE 4: LOG READING (WATCHER)
+    Watcher -> K8sLogs : tailingLines(1000).watchLog()\n[поиск логов, начиная с 1000-й строки]
+    K8sLogs -->> Watcher : LogWatch (stream)
+    loop while (line = reader.readLine())
+        Watcher -> Watcher : checkLoggerName(line, regex)\n[Pattern matching]
+        alt logger matched
+            Watcher -> Watcher : addToBuffer(logBuffer, line)\n[накопление строк]
+            Note over Watcher : recordsBatchSizeByLogger=2\n[из конфига]
+            alt buffer full (2 строки)
+                Watcher -> Watcher : closeBuffer(logBuffer, queue)\n    build OttLogTrueBucket:\n        .config = ConfigDto\n        .received = now()\n        .lines = logBuffer.toArray()\n    logBuffer.clear()
+                Watcher -> Queue : put(OttLogTrueBucket{lines[]})
+            end
+        end
+    end
+end
+
+group PHASE 5: PARSING (PROCESSOR)
+    Processor -> Queue : take()\n[blocking — ждём новый bucket]
+    Queue -->> Processor : OttLogTrueBucket
+    Processor -> Resolver : getParser(bucket)\n[Strategy: V01 или DEFAULT]
+    Resolver -->> Processor : V1Impl\n[XACML detected]
+    Processor -> Parser : parseBucketAndHandle(bucket, record)\n[extract XACML fields]
+    Parser -> Parser : detectResult() → PERMIT / DENY / UNKNOWN
+    Parser -> Parser : extract: moduleIdProvider, host,\nmoduleIdConsumer, path, method\n[regex из XACML строк]
+    Parser -->> Processor : record.event {result, method, path, host, moduleIdProvider, moduleIdConsumer}
+    Processor -> Processor : allFieldsFilled(record) OR healthcheck?
+    alt все поля заполнены
+        Processor -> Buffer : submit(record)
+        Note over Buffer : SubmissionPublisher\nbuffer size=30, timeout=30s
+    end
+end
+
+group PHASE 6: SEND (BUFFER + SENDER)
+    Processor -> Buffer : submit(record)\n[SubmissionPublisher → buffer]
+    Buffer -> Buffer : buffer full (≥30) → flush()\n[или timeout=30s → flush()]
+    Buffer -> KafkaSend : send(batch of records)\n[groupBy sidecar config]
+    KafkaSend -> KafkaSend : groupingBy(sidecar config)\n[каждая группа — отдельный batch]
+    loop For each sidecar group
+        KafkaSend -> KafkaSend : build OttLogTrueSidecarBucket (Proto)\naddAllEvent(OttLogTrueSidecarEvent)\n[healthcheck, standType, standCI, cluster,\n project, deployment, pod, container,\n event: result, method, path, host]
+        KafkaSend -> KafkaSend : build ProtoHeaders(\nmessageId=UUID, topic, addressee, zipped=true)
+        KafkaSend -->> Consumer : Kafka Topic (zipped Proto)
+    end
+end
+
+group CALLBACK
+    Watcher -> Watcher : onCompletion.accept(sidecarKey)\n[callback: watcher завершён]
+    Note over Watcher : watcher удалён из\nrunnedWatchers\ncompletedSidecars.add(key)
+    Collector -> Collector : all watchers complete\n[informer.close()]
+    Collector -> onCompletion : accept(namespace)\n[callback: namespace завершён]
+    Note over Collector : workers.remove(namespace)
+end
+
+@enduml
+
+@startuml OttLogTrueWatcher_Healthcheck
+
+title Healthcheck-механизм (heartbeat)
+
+participant "OttLogTrueSidecarWatcher" as Watcher
+participant "Healthcheck Scheduler" as Health
+participant "BlockingQueue\nOttLogTrueBucket" as Queue
+participant "OttLogTrueSidecarProcessor" as Processor
+
+Watcher -> Watcher : startHealthChecker(queue)\n[scheduleAtFixedRate, period=healthcheckPeriodSecs]
+Watcher -> Health : scheduleAtFixedRate(healthCheck, period, SECONDS)
+activate Health
+
+loop Every healthcheckPeriodSecs
+    Health -> Health : build OttLogTrueBucket.builder()\n    .config = ConfigDto\n    .received = now()\n    .lines = new String[]{}\n    .healthcheckRecord = true
+    Note right of Health : healthcheckRecord=true\nlines = пустой массив\nconfig = OttLogTrueSidecarConfigDto\nreceived = current timestamp
+
+    Health -> Queue : put(OttLogTrueBucket)
+    activate Queue
+    Queue -->> Processor : OttLogTrueBucket\n[healthcheckRecord=true]
+    deactivate Queue
+    Processor -> Processor : processInternal(bucket)
+    Processor -> Processor : parser = Resolver.getParser(bucket)
+    Processor -> Parser : isSupported(bucket)
+    Parser -->> Processor : OttLogTrueParserDefaultImpl\n[not XACML]
+    Processor -> Processor : record = new OttLogTrueRecord(config, true)\n[healthcheckRecord=true]
+    Parser -> Parser : parseBucketAndHandle(bucket, record)\n[DefaultImpl → event.result=UNKNOWN]
+    Parser -->> Processor : record.event {result=UNKNOWN,\nвсе поля пустые,\nhealthcheck=true}
+
+    Processor -> Processor : allFieldsFilled OR healthcheck?
+    alt healthcheck=true
+        Processor -> Buffer : submit(record)\n[healthcheck — отправляем!]\n[даже если все поля пустые]
+        Note right of Processor : healthcheckRecord=true\n→ обязательная отправка\n[heartbeat для мониторинга]
+        Buffer -> KafkaSend : flush() → send → Kafka\n[содержит healthcheck record]
+        KafkaSend -->> Consumer : Kafka: healthcheck event\n[standType, standCI, cluster,\n pod, container, result=UNKNOWN]
+    end
+end
+
+Watcher -> Health : stopHealthChecker()\n[healthChecker.cancel(false)\nhealthcheckScheduler.shutdown()]
+deactivate Health
+
+@enduml
+
+@startuml OttLogTrueWatcher_Informer
+
+title Informer - реактивное обнаружение подов
+
+participant "OttLogTrueNamespaceCollector" as Collector
+participant "K8s API\n(Pods Informer)" as K8sPods
+participant "OttLogTrueSidecarWatcher" as Watcher
+participant "BlockingQueue\nOttLogTrueBucket" as Queue
+
+Collector -> K8sPods : pods().inNamespace(ns).runnableInformer(resyncMs)
+activate K8sPods
+K8sPods -->> Collector : RunnableResourceInformer<Pod>
+deactivate K8sPods
+
+Collector -> Collector : addEventHandler(ResourceEventHandler<Pod>)
+activate Collector
+Note over Collector : EventHandler:\n  onAdd(Pod)\n  onUpdate(oldPod, newPod)\n  onDelete(Pod)
+Collector -> Collector : start()\n[informer запущен]
+deactivate Collector
+
+' ====== PHASE 1: Pod ADDED ======
+Note over K8sPods : Pod created with OTT sidecar\n[K8s API event]
+K8sPods -> Collector : onAdd(Pod)
+activate K8sPods
+Collector -> Collector : waitUntilCondition(pod, Ready=True, timeout=180s)
+alt pod became Ready
+    Collector -> Collector : detectOttSidecar(pod)\n[build OttSidecarDto]
+    Collector -> Watcher : getObject() [PROTOTYPE]\n[new watcher for each sidecar]
+    Watcher -> Queue : start(config, callback, queue)\n[start log-reading stream]
+    Note over Watcher : Log reading thread\nstarted
+    Watcher -> Watcher : CompletableFuture.runAsync(startInternal)
+    deactivate Watcher
+else timeout (180s)
+    Collector -> Collector : log WARN - Pod not Ready\n[watcher not started]
+end
+deactivate K8sPods
+
+' ====== PHASE 2: Pod UPDATED ======
+Note over K8sPods : Pod status changed\n[K8s API event]
+K8sPods -> Collector : onUpdate(oldPod, newPod)
+activate K8sPods
+Collector -> Collector : log "Pod phase changed"\n[only logging]
+Note right of Collector : Only logging\nnew watchers NOT created
+deactivate K8sPods
+
+' ====== PHASE 3: Pod DELETED ======
+Note over K8sPods : Pod terminated\n[K8s API event]
+K8sPods -> Collector : onDelete(Pod)
+activate K8sPods
+Collector -> Collector : no-op\n[waiting for watcher to finish]
+Note right of Collector : Watcher finishes itself\non log-stream close
+deactivate K8sPods
+
+@enduml
+
+@startuml OttLogTrueWatcher_ParserChain
+
+title Цепочка парсеров (Strategy Pattern + Factory)
+
+participant "OttLogTrueSidecarProcessor" as Processor
+participant "OttLogTrueParserResolver" as Resolver
+participant "OttLogTrueParserV1Impl" as V01
+participant "OttLogTrueParserDefaultImpl" as Default
+participant "OttLogTrueBucket" as Bucket
+
+Processor -> Resolver : getParser(bucket)\n[Strategy: выбрать парсер по bucket]
+activate Resolver
+
+Resolver -> V01 : isSupported(bucket)\n[проверка XACML заголовка]
+activate V01
+V01 -> V01 : logLines = String.join(" ", lines)\n[V01]
+V01 -> V01 : matchSubstr(supportVersionRegex, logLines)\n[Pattern: Category=urn:oasis:names:tc:xacml:1.0:subject-category:access-subject]
+alt XACML header detected
+    V01 -->> Resolver : OK true
+else no XACML header
+    V01 -->> Resolver : false
+end
+deactivate V01
+
+Resolver -> Default : isSupported(bucket)\n[всегда false]
+activate Default
+Default -->> Resolver : false (always)\n[fallback]
+deactivate Default
+
+alt V01 supported
+    Resolver -->> Processor : V01 parser
+else nothing matched
+    Resolver -->> Processor : Default parser [fallback]
+end
+deactivate Resolver
+
+Processor -> V01 : parseBucketAndHandle(bucket, record)\n[extract XACML data]
+activate V01
+V01 -> V01 : logLines = String.join(" ", lines)\n[V01 — объединение строк]
+V01 -> V01 : detectResult(logLines)\n[PERMIT / DENY / UNKNOWN]
+Note over V01 : PERMIT: (Result: 'Result\()|(Decision=Permit)\nDENY: (Result: 'Deny')|('Deny')
+V01 -> V01 : extractModuleIdProviderUni(logLines)\n[module_id: 'value']\nshiftLeft=12, shiftRight=-1
+V01 -> V01 : extractHost(logLines)\n[host: 'value']\nshiftLeft=7, shiftRight=-1
+V01 -> V01 : extractModuleIdConsumer(logLines)\n[access-subject{[[value]]}]
+V01 -> V01 : extractModuleIdProvider(logLines)\n[recipient-subject{[[value]]}]\n[fallback если uni пуст]
+V01 -> V01 : extractPath(logLines)\n[api:interface:fullname{[value]}]
+V01 -> V01 : extractMethod(logLines)\n[names:http:method,Category={[(GET|POST|...)]}]\ngroup(1) = метод
+V01 -->> Processor : record.event {\n  result: PERMIT|DENY,\n  method: GET|POST|...,\n  path: /api/v1/..., \n  host: '...','\n  moduleIdProvider: '...',\n  moduleIdConsumer: '...'}
+deactivate V01
+
+@enduml
+
+@startuml OttLogTrueWatcher_SendBuffer
+
+title Буфер отправки (ReactiveSendBuffer)
+
+participant "OttLogTrueSidecarProcessor" as Processor
+participant "OttLogTrueSendBuffer" as Buffer
+participant "CheckTimeout Scheduler" as TimeoutScheduler
+participant "OttLogTrueSender" as Sender
+
+Processor -> Buffer : submit(record)\n[SubmissionPublisher.onNext(record)]
+activate Buffer
+
+Buffer -> Buffer : SenderSubscriber.onNext(record)\n[Java Flow API subscriber]
+Buffer -> Buffer : buffer.offer(record)\n[ConcurrentLinkedQueue]<br/>currentSize++
+Note right of Buffer : buffer: ConcurrentLinkedQueue\nmaxSize=30 (из конфига)\ntimeoutMs=30000 (из конфига)
+
+alt buffer full (size >= maxSize=30)
+    Buffer -> Sender : flush()\n[drain buffer → batch]
+    Note over Buffer,Sender : Send all buffered records\n[batch flush]
+end
+
+Note over Buffer : ───────── async timeout check ─────────
+
+Buffer -> TimeoutScheduler : scheduleAtFixedRate(checkTimeout, timeoutMs, 100ms)\n[каждые 100мс проверяем timeout]
+activate TimeoutScheduler
+
+loop Every 100ms
+    TimeoutScheduler -> Buffer : checkTimeout()\n[basic check: buffer not empty?]
+    Buffer -> Buffer : buffer not empty AND elapsed > timeoutMs=30000?
+    alt timeout exceeded
+        Buffer -> Sender : flush()\n[timeout flush]
+        Note over Buffer,Sender : Send all buffered records\n(timeout flush)
+    end
+end
+deactivate TimeoutScheduler
+
+Sender -> Sender : groupingBy(config) → packets\n[группировка по sidecar]
+loop For each packet
+    Sender -> Sender : build Proto(OttLogTrueSidecarBucket)\naddAllEvent(OttLogTrueSidecarEvent)
+    Sender -> Sender : ProtoHeaders(\nmessageId=UUID, topic, addressee)
+    Sender -> Sender : doRequestVoid(headers, bucketProto)\n[Kafka producer]
+    Note over Sender : Kafka → uamc-ottlogstrue-consumer
+end
+
+Buffer -->> Processor : OK Record acknowledged
+deactivate Buffer
+
+@enduml
+
+### ASSISTANT
+Принято. Диаграммы сильно уточняют картину, особенно по модулю:
+
+```text
+uamc-agent-ottlogstruewatcher
+profile: OTTLOGSWTRUE
+```
+
+Это не просто «watcher логов», а полноценный streaming pipeline:
+
+```text
+Scheduler
+  → получение конфигурации через Kafka
+  → запуск NamespaceCollector'ов
+  → discovery pod'ов и OTT-sidecar'ов
+  → запуск SidecarWatcher'ов
+  → чтение логов из Kubernetes
+  → накопление строк в bucket'ы
+  → очередь на парсинг
+  → парсер XACML-логов
+  → буферизация записей
+  → группировка по sidecar'ам
+  → отправка protobuf-сообщений в Kafka
+```
+
+Ниже — обновлённый план миграции с учётом этих UML-диаграмм.
+
+---
+
+# 1. Главное уточнение по архитектуре
+
+Раньше модуль можно было рассматривать как набор REST/watcher-компонентов. Теперь видно, что `OttLogTrueWatcher` имеет собственную сложную внутреннюю архитектуру.
+
+## 1.1. Основные сущности
+
+Из диаграмм выделяются следующие компоненты:
+
+```text
+OttLogTrueWatcherAppConfig
+OttLogTrueScheduler
+OttLogTrueConfigProvider
+OttLogTrueConfigResponseConverter
+OttLogTrueWatcherService
+NamespaceService
+OttLogTrueNamespaceCollector
+OttLogTruePodsService
+OttLogTrueSidecarWatcher
+OttLogTrueSidecarProcessor
+OttLogTrueParserResolver
+OttLogTrueParserV1Impl
+OttLogTrueParserDefaultImpl
+OttLogTrueSendBuffer
+OttLogTrueSender
+OUTRequestSender
+```
+
+---
+
+## 1.2. Общий поток данных
+
+```text
+┌────────────────────────┐
+│ OttLogTrueScheduler    │
+│ @Scheduled every N min │
+└───────────┬────────────┘
+            │
+            ▼
+┌────────────────────────┐
+│ OttLogTrueConfigProvider│
+│ getConfig()             │
+└───────────┬────────────┘
+            │ Kafka request/response
+            ▼
+┌────────────────────────┐
+│ OttLogTrueConfigDto     │
+│ - namespacesOfCluster   │
+│ - scanPeriod            │
+│ - sidecarMask           │
+│ - replyTopicEvents      │
+│ - healthcheckPeriod     │
+└───────────┬────────────┘
+            │
+            ▼
+┌────────────────────────┐
+│ OttLogTrueWatcherService│
+│ start(config)           │
+└───────────┬────────────┘
+            │
+            ▼
+┌──────────────────────────────┐
+│ OttLogTrueNamespaceCollector │
+│ per namespace                │
+└───────────┬──────────────────┘
+            │
+            ├──────────────────────────────┐
+            │                              │
+            ▼                              ▼
+┌──────────────────────┐      ┌──────────────────────────┐
+│ OttLogTruePodsService│      │ Kubernetes Pod Informer  │
+│ initial pod list     │      │ add/update/delete events │
+└──────────┬───────────┘      └────────────┬─────────────┘
+           │                               │
+           └───────────────┬───────────────┘
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueSidecarWatcher │
+              │ per sidecar container    │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ Kubernetes container logs│
+              │ tailingLines(1000)       │
+              │ follow                   │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ Line bucketizer          │
+              │ recordsBatchSizeByLogger │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ BlockingQueue<Bucket>    │
+              │ capacity = 1000          │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueSidecarProcessor│
+              │ parser thread             │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueParserResolver │
+              │ V01 / DEFAULT            │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueRecord         │
+              │ XACML event              │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueSendBuffer     │
+              │ max 30 records           │
+              │ timeout 30 sec           │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ OttLogTrueSender         │
+              │ group by sidecar config  │
+              └────────────┬─────────────┘
+                           │
+                           ▼
+              ┌──────────────────────────┐
+              │ Kafka                    │
+              │ topic: replyTopicEvents  │
+              │ addressee:               │
+              │ uamc-ottlogstrue-consumer│
+              │ zipped: true             │
+              └──────────────────────────┘
+```
+
+---
+
+# 2. Обновлённая целевая структура Go-модуля
+
+Для `ottlogstruewatcher` лучше выделить отдельный пакет:
+
+```text
+internal/modules/ottlogstrue/
+├── module.go
+├── config.go
+├── scheduler.go
+├── config_provider.go
+├── config_converter.go
+├── watcher_service.go
+├── namespace_service.go
+├── namespace_collector.go
+├── pods_service.go
+├── sidecar_detector.go
+├── sidecar_watcher.go
+├── log_bucketizer.go
+├── sidecar_processor.go
+├── parser_resolver.go
+├── parser_v1.go
+├── parser_default.go
+├── record.go
+├── send_buffer.go
+├── sender.go
+├── healthcheck.go
+├── state.go
+├── regex_cache.go
+├── metrics.go
+└── errors.go
+```
+
+---
+
+# 3. Обновлённое соответствие Java → Go
+
+| Java/Spring сущность | Go-эквивалент |
+|---|---|
+| `@Profile(OTTLOGSWTRUE)` | `modules.ottlogstrue.enabled: true` |
+| `OttLogTrueWatcherAppConfig` | `module.go`, `bootstrap.go` |
+| `@Import(InKafkaConfiguration, OutKafkaConfiguration)` | явная инициализация Kafka producer/consumer |
+| `@Bean singleton` | singleton-сервис через constructor injection |
+| `ObjectProvider<OttLogTrueNamespaceCollector>` | factory func `NewNamespaceCollector(...)` |
+| `ObjectProvider<OttLogTrueSidecarWatcher>` | factory func `NewSidecarWatcher(...)` |
+| prototype bean | новый объект через фабрику на каждый namespace/sidecar |
+| `@Scheduled(fixedDelay)` | `time.Ticker` / `time.Timer` |
+| `BlockingQueue<OttLogTrueBucket>` | buffered channel `chan Bucket` capacity 1000 |
+| `ExecutorService` | goroutine + `context.Context` |
+| `CompletableFuture.runAsync` | `go func()` + `errgroup` / `WaitGroup` |
+| `CompletableFuture.allOf(...).get(500ms)` | `WaitGroup` + `select` + ticker, если нужен polling |
+| `SubmissionPublisher` | custom batcher с channel/mutex + ticker |
+| `ConcurrentLinkedQueue` | mutex-protected slice/channel/ring buffer |
+| `scheduleAtFixedRate` | `time.Ticker` |
+| `Pattern.matcher(...)` | `regexp.Regexp` |
+| pattern cache | `sync.Map[string]*regexp.Regexp` |
+| Kubernetes Fabric8 client | `client-go` |
+| `pods().inNamespace(ns).list()` | `clientset.CoreV1().Pods(ns).List(...)` |
+| `runnableInformer(resyncMs)` | `SharedInformer` / `ListWatch` |
+| `waitUntilCondition(pod, Ready, 180s)` | `wait.PollUntilContextTimeout` |
+| `tailingLines(1000).watchLog()` | `GetLogs(... TailLines: 1000, Follow: true).Stream(...)` |
+| `OUTRequestSender.doRequestVoid` | Kafka producer send without expected response |
+| `doRequest` request-response | Kafka correlation client with timeout |
+
+---
+
+# 4. Обновлённая конфигурация модуля
+
+Нужно вынести все параметры, которые видны на диаграммах.
+
+Пример:
+
+```yaml
+uamc:
+  ottlogstrue-watcher:
+    enabled: true
+    monitor-scheduler:
+      disable: false
+      fixed-delay-minutes: 5
+    queue:
+      capacity: 1000
+    log-reader:
+      tailing-lines: 1000
+      records-batch-size-by-logger: 2
+      pod-ready-timeout-seconds: 180
+    send-buffer:
+      max-size: 30
+      timeout-ms: 30000
+      check-interval-ms: 100
+    parser:
+      versions:
+        - V01
+        - DEFAULT
+```
+
+Из конфигурации `OttLogTrueConfigDto`, получаемой через Kafka, должны приходить:
+
+```text
+scanPeriod
+sidecarMask
+replyTopicEvents
+healthcheckPeriod
+namespacesOfCluster
+```
+
+Нужно отдельно уточнить единицы измерения:
+
+```text
+scanPeriod — секунды, миллисекунды, минуты?
+healthcheckPeriod — секунды?
+fixedDelay — минуты?
+resyncMs — миллисекунды?
+```
+
+---
+
+# 5. Обновлённая архитектура компонентов
+
+---
+
+## 5.1. OttLogTrueScheduler
+
+На Java:
+
+```text
+@Scheduled(initialDelay, fixedDelay, MINUTES)
+restartWatchers()
+```
+
+На Go:
+
+```go
+type Scheduler struct {
+    logger        *slog.Logger
+    configProvider ConfigProvider
+    service       WatcherService
+    fixedDelay    time.Duration
+    disabled      bool
+}
+```
+
+Поведение:
+
+```text
+1. Если scheduler disabled — не запускать.
+2. Запускать цикл с fixedDelay.
+3. На каждом тике:
+   - получить конфиг, если ещё не получен;
+   - вызвать service.start(config);
+4. Останавливаться по context.Done().
+```
+
+Важно:
+
+```text
+getConfig() должен быть атомарным и идемпотентным.
+В Java используется compareAndSet(null, config).
+```
+
+В Go можно использовать:
+
+```go
+atomic.Pointer[ConfigDto]
+```
+
+или:
+
+```go
+sync.Once
+```
+
+Но если нужна возможность повторной попытки при ошибке, лучше:
+
+```go
+mu sync.Mutex
+config *ConfigDto
+```
+
+или:
+
+```go
+atomic.Pointer[ConfigDto]
+```
+
+с проверкой:
+
+```go
+if old := p.Load(); old == nil {
+    p.CompareAndSwap(nil, newConfig)
+}
+```
+
+---
+
+## 5.2. OttLogTrueConfigProvider
+
+Отвечает за:
+
+```text
+1. Сборку OttLogTrueConfigRequest.
+2. Отправку запроса через Kafka.
+3. Получение OttLogTrueConfigResponse.
+4. Конвертацию в OttLogTrueConfigDto.
+5. Однократное кэширование конфига.
+```
+
+Запрос:
+
+```text
+OttLogTrueConfigRequest(clusterName)
+```
+
+Ответ:
+
+```text
+OttLogTrueConfigResponse
+```
+
+После конвертации:
+
+```go
+type ConfigDto struct {
+    ScanPeriod        time.Duration
+    SidecarMask       string
+    ReplyTopicEvents  string
+    HealthcheckPeriod time.Duration
+    Namespaces        []string
+}
+```
+
+Нужно сохранить:
+
+```text
+ProtoHeaders:
+  messageId
+  topic
+  addressee
+  timestamp
+```
+
+И поведение request-response через Kafka.
+
+---
+
+## 5.3. OttLogTrueWatcherService
+
+Отвечает за запуск namespace-collector'ов.
+
+Поведение из диаграммы:
+
+```text
+For each namespace in config.namespacesOfCluster:
+  1. Проверить workers.get(namespace).
+  2. Если namespace уже обрабатывается — skip.
+  3. Получить standCI через NamespaceService.
+  4. Если label access.firepaws.io/stand не найден — WARN, skip.
+  5. Создать prototype NamespaceCollector.
+  6. Запустить collector.start(namespaceConfigDto, workers::remove).
+  7. Сохранить workers.put(namespace, collector).
+```
+
+На Go:
+
+```go
+type WatcherService struct {
+    logger            *slog.Logger
+    namespaceService  NamespaceService
+    collectorFactory  CollectorFactory
+    workers           map[string]*NamespaceCollector
+    mu                sync.Mutex
+}
+```
+
+Важно:
+
+```text
+workers map должна быть потокобезопасной.
+Callback workers::remove должен удалять namespace после завершения collector.
+```
+
+---
+
+## 5.4. NamespaceService
+
+Из диаграммы:
+
+```text
+client.namespaces().withName(ns).get()
+ns.metadata.labels
+label access.firepaws.io/stand
+```
+
+На Go:
+
+```go
+type NamespaceService struct {
+    kube kubernetes.Interface
+}
+```
+
+Метод:
+
+```go
+func (s *NamespaceService) GetStandCI(ctx context.Context, namespace string) (string, bool, error)
+```
+
+Логика:
+
+```text
+1. Получить Namespace.
+2. Прочитать label:
+   access.firepaws.io/stand
+3. Вернуть значение.
+```
+
+Нужно решить:
+
+```text
+Кэшировать ли результат?
+Если да, какой TTL?
+```
+
+---
+
+## 5.5. OttLogTrueNamespaceCollector
+
+Это один из самых сложных компонентов.
+
+Он отвечает за:
+
+```text
+1. Запуск SidecarProcessor.
+2. Первоначальный список pod'ов.
+3. Фильтрацию pod'ов по sidecarMask.
+4. Обнаружение OTT-sidecar'ов.
+5. Запуск SidecarWatcher'ов.
+6. Deduplication по sidecarKey.
+7. Запуск Pod informer.
+8. Обработку add/update/delete событий.
+9. Ожидание завершения всех watchers.
+10. Вызов onCompletion(namespace).
+```
+
+---
+
+### 5.5.1. Структура
+
+```go
+type NamespaceCollector struct {
+    logger           *slog.Logger
+    namespaceConfig  NamespaceConfigDto
+    podsService      PodsService
+    watcherFactory   SidecarWatcherFactory
+    kube             kubernetes.Interface
+    queue            chan Bucket
+    processor        *SidecarProcessor
+    onCompletion     func(namespace string)
+
+    runnedWatchers   map[string]*SidecarWatcher
+    completedSidecars map[string]struct{}
+    watchersWG       sync.WaitGroup
+
+    stopCh           chan struct{}
+    stopOnce         sync.Once
+}
+```
+
+---
+
+### 5.5.2. Lifecycle
+
+```text
+start(config, onCompletion)
+  1. processor.start(namespaceConfig)
+  2. list pods
+  3. filter pods by sidecarMask
+  4. for each pod:
+       detect sidecar
+       if not completed and not running:
+           start watcher
+           add to runnedWatchers
+  5. start pod informer
+  6. wait until all watchers complete or stop requested
+  7. close informer
+  8. onCompletion(namespace)
+```
+
+---
+
+### 5.5.3. Important: informer handlers не должны блокироваться
+
+В Java диаграмме:
+
+```text
+onAdd → waitReady → runWatch
+```
+
+В Go, если использовать `SharedInformer`, handler'ы нельзя блокировать надолго.
+
+Поэтому:
+
+```go
+AddFunc: func(obj interface{}) {
+    pod := obj.(*v1.Pod)
+    go c.handlePodAdd(ctx, pod)
+}
+```
+
+Внутри:
+
+```text
+waitUntilCondition(pod, Ready=True, timeout=180s)
+detect sidecar
+start watcher
+```
+
+Иначе один pod, который долго становится Ready, заблокирует informer.
+
+---
+
+## 5.6. OttLogTruePodsService
+
+Отвечает за:
+
+```text
+filterByContainerName(pod, sidecarMask)
+```
+
+Из диаграммы:
+
+```text
+Проверка по pattern cache
+```
+
+На Go:
+
+```go
+type PodsService struct {
+    regexCache *RegexCache
+}
+```
+
+Метод:
+
+```go
+func (s *PodsService) FilterPodsBySidecarMask(pods []v1.Pod, mask string) []SidecarContainerRef
+```
+
+Нужно вернуть не просто pod'ы, а пары:
+
+```text
+pod + container
+```
+
+Потому что sidecarMask фильтрует именно контейнеры внутри pod.
+
+Пример:
+
+```go
+type SidecarContainerRef struct {
+    Pod       v1.Pod
+    Container string
+}
+```
+
+---
+
+## 5.7. Sidecar detection
+
+Из диаграммы:
+
+```text
+detectOttSidecar(pod)
+parentObjectInfoOf(pod)
+build OttSidecarDto(sidecarKey)
+```
+
+SidecarKey включает:
+
+```text
+namespace
+pod
+container
+deployment
+```
+
+Нужно реализовать:
+
+```go
+type SidecarDto struct {
+    Namespace          string
+    Pod                string
+    Container          string
+    DeploymentUnitKind string
+    DeploymentUnitName string
+    Key                string
+}
+```
+
+Пример key:
+
+```text
+namespace/pod/container/deploymentKind/deploymentName
+```
+
+или:
+
+```text
+{namespace}/{pod}/{container}/{deploymentUnitKind}/{deploymentUnitName}
+```
+
+Нужно уточнить точный формат из Java.
+
+---
+
+### 5.7.1. Parent object info
+
+Нужно определить владельца pod'а.
+
+Обычно:
+
+```text
+Pod -> ReplicaSet -> Deployment
+```
+
+В Go:
+
+```text
+1. Смотрим pod.OwnerReferences.
+2. Если kind == ReplicaSet:
+   - получаем ReplicaSet;
+   - смотрим OwnerReferences;
+   - если kind == Deployment — используем Deployment.
+3. Если owner другой — используем его kind/name.
+```
+
+Вопрос:
+
+```text
+Как именно Java parentObjectInfoOf определяет deploymentUnitKind и deploymentUnitName?
+```
+
+Нужно повторить точно.
+
+---
+
+## 5.8. OttLogTrueSidecarWatcher
+
+Отвечает за чтение логов конкретного sidecar-контейнера.
+
+Из диаграммы:
+
+```text
+1. Запуск healthcheck scheduler.
+2. Открытие log stream:
+   tailingLines(1000).watchLog()
+3. Чтение строк.
+4. Проверка auto-stop по scanPeriod.
+5. Проверка строки через checkLoggerName regex.
+6. Накопление строк в logBuffer.
+7. Закрытие buffer при:
+   - новом logger match;
+   - достижении размера 2;
+   - завершении чтения.
+8. Отправка bucket в BlockingQueue.
+9. Закрытие log watch.
+10. Вызов onCompletion(sidecarKey).
+11. Остановка healthcheck scheduler.
+```
+
+---
+
+### 5.8.1. Go-структура
+
+```go
+type SidecarWatcher struct {
+    logger        *slog.Logger
+    sidecar       SidecarDto
+    config        SidecarConfigDto
+    kube          kubernetes.Interface
+    queue         chan Bucket
+    onCompletion  func(sidecarKey string)
+    regexCache    *RegexCache
+
+    stopCh        chan struct{}
+    stopOnce      sync.Once
+}
+```
+
+---
+
+### 5.8.2. Log stream
+
+На Java:
+
+```text
+tailingLines(1000).watchLog()
+```
+
+На Go:
+
+```go
+opts := &v1.PodLogOptions{
+    Container: sidecar.Container,
+    Follow:    true,
+    TailLines: ptr.To[int64](1000),
+}
+
+req := kube.CoreV1().Pods(sidecar.Namespace).GetLogs(sidecar.Pod, opts)
+
+stream, err := req.Stream(ctx)
+```
+
+Важно:
+
+```text
+TailLines=1000 означает последние 1000 строк.
+Если в Java логика действительно "start from line 1000", это надо уточнить.
+```
+
+---
+
+### 5.8.3. Auto-stop по scanPeriod
+
+Из диаграммы:
+
+```text
+check auto-stop:
+scanPeriodFromStartPodSeconds elapsed?
+```
+
+Если чтение логов блокируется на `reader.ReadLine()`, то один только check внутри цикла не спасёт, если новых строк нет.
+
+Поэтому нужен отдельный context timeout:
+
+```go
+ctx, cancel := context.WithTimeout(ctx, scanPeriod)
+defer cancel()
+```
+
+Или отдельный timer:
+
+```go
+time.AfterFunc(scanPeriod, func() {
+    w.Stop()
+})
+```
+
+Иначе watcher может зависнуть, если лог не пишет новые строки.
+
+---
+
+## 5.9. Healthcheck
+
+Из диаграммы:
+
+```text
+Every healthcheckPeriodSecs:
+  build OttLogTrueBucket:
+    config = ConfigDto
+    received = now()
+    lines = empty
+    healthcheckRecord = true
+  put bucket to queue
+```
+
+На Go:
+
+```go
+func (w *SidecarWatcher) runHealthcheck(ctx context.Context) {
+    ticker := time.NewTicker(w.config.HealthcheckPeriod)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            bucket := Bucket{
+                Config:      w.config,
+                Received:    time.Now(),
+                Lines:       []string{},
+                Healthcheck: true,
+            }
+
+            select {
+            case w.queue <- bucket:
+            case <-ctx.Done():
+                return
+            }
+        }
+    }
+}
+```
+
+Важно:
+
+```text
+healthcheck bucket должен проходить через processor и parser chain, как в Java.
+Он должен отправляться в Kafka даже если все XACML-поля пустые.
+```
+
+---
+
+## 5.10. Bucketizer
+
+Из диаграммы:
+
+```text
+recordsBatchSizeByLogger = 2
+```
+
+Логика:
+
+```text
+Если строка совпадает с checkLoggerNameRegex:
+  это начало новой лог-записи.
+  Если уже был открытый buffer — закрыть его.
+  Начать новый buffer.
+  Добавить строку.
+
+Если строка не совпадает:
+  Если buffer уже открыт — добавить строку как продолжение.
+  Если buffer не открыт — игнорировать строку.
+
+Если buffer size == 2:
+  закрыть buffer.
+  отправить в queue.
+```
+
+На Go:
+
+```go
+type Bucketizer struct {
+    batchSize int
+    regex     *regexp.Regexp
+    buffer    []string
+    started   time.Time
+    inBuffer  bool
+}
+```
+
+Метод:
+
+```go
+func (b *Bucketizer) ProcessLine(line string) []Bucket
+```
+
+Возвращает:
+
+```text
+0 bucket'ов — строка добавлена или проигнорирована;
+1 bucket — buffer закрыт.
+```
+
+Нужно сохранить Java-поведение:
+
+```text
+String.join(" ", lines)
+```
+
+То есть bucket хранит массив строк, а парсер потом соединяет их через пробел.
+
+---
+
+## 5.11. BlockingQueue
+
+Из диаграммы:
+
+```text
+LinkedBlockingQueue(1000)
+```
+
+На Go:
+
+```go
+queue := make(chan Bucket, 1000)
+```
+
+Поведение Java `put()`:
+
+```text
+блокируется, если очередь заполнена
+```
+
+Поведение Go:
+
+```go
+select {
+case queue <- bucket:
+case <-ctx.Done():
+}
+```
+
+Это даст блокировку с возможностью остановки.
+
+---
+
+## 5.12. OttLogTrueSidecarProcessor
+
+Из диаграммы:
+
+```text
+Parser thread:
+while (!stopParsing && !Thread.interrupted())
+  bucket = queue.take()
+  processInternal(bucket)
+```
+
+На Go:
+
+```go
+func (p *SidecarProcessor) Run(ctx context.Context) {
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case bucket, ok := <-p.queue:
+            if !ok {
+                return
+            }
+            p.process(ctx, bucket)
+        }
+    }
+}
+```
+
+Но для graceful shutdown нужно аккуратно закрыть queue только после остановки всех watchers.
+
+---
+
+### 5.12.1. Processing
+
+```text
+1. Получить parser через ParserResolver.
+2. Создать OttLogTrueRecord.
+3. Вызвать parseBucketAndHandle.
+4. Проверить:
+   - заполнены ли moduleIdProvider, method, moduleIdConsumer, path;
+   - или healthcheckRecord == true.
+5. Если да — отправить record в SendBuffer.
+6. Если нет — игнорировать.
+```
+
+Условие отправки:
+
+```text
+isNotEmpty(event.moduleIdProvider)
+&& isNotEmpty(event.method)
+&& isNotEmpty(event.moduleIdConsumer)
+&& isNotEmpty(event.path)
+OR healthcheckRecord
+```
+
+Обрати внимание:
+
+```text
+host не входит в обязательные поля для отправки.
+```
+
+---
+
+## 5.13. Parser chain
+
+Из диаграммы:
+
+```text
+OttLogTrueParserResolver
+  V01
+  DEFAULT
+```
+
+### V01 supported condition
+
+```text
+Category=urn:oasis:names:tc:xacml:1.0:subject-category:access-subject
+```
+
+Если эта подстрока/regex найдена:
+
+```text
+parser = V01
+```
+
+Иначе:
+
+```text
+parser = DEFAULT
+```
+
+---
+
+### V01 parsing
+
+Из диаграммы:
+
+```text
+logLines = String.join(" ", lines)
+```
+
+Затем:
+
+```text
+detectResult(logLines)
+```
+
+Варианты:
+
+```text
+PERMIT
+DENY
+UNKNOWN
+```
+
+Если результат `PERMIT` или `DENY`, извлекаются:
+
+```text
+moduleIdProvider
+host
+moduleIdConsumer
+path
+method
+received
+```
+
+---
+
+### Известные паттерны из диаграмм
+
+Нужно будет взять точные regex из Java, но из UML видно следующее.
+
+#### XACML header
+
+```text
+Category=urn:oasis:names:tc:xacml:1.0:subject-category:access-subject
+```
+
+#### Result PERMIT
+
+```text
+(Result: 'Result\()|(Decision=Permit)
+```
+
+#### Result DENY
+
+```text
+(Result: 'Deny')|('Deny')|(Decision=Deny)
+```
+
+#### module_id provider universal
+
+```text
+module_id: 'value'
+```
+
+Смещения:
+
+```text
+shiftLeft = 12
+shiftRight = -1
+```
+
+#### module_id provider fallback
+
+```text
+recipient-subject{[[value]]}
+```
+
+#### host
+
+```text
+host: 'value'
+```
+
+Смещения:
+
+```text
+shiftLeft = 7
+shiftRight = -1
+```
+
+#### moduleIdConsumer
+
+```text
+access-subject{[[value]]}
+```
+
+#### path
+
+```text
+api:interface:fullname{[[value]]}
+```
+
+или:
+
+```text
+api:interface:fullname{[value]}
+```
+
+Нужно уточнить точное количество скобок из Java.
+
+#### method
+
+```text
+names:http:method,Category={[(GET|POST|...)]}
+```
+
+Извлекается HTTP method:
+
+```text
+GET
+POST
+PUT
+DELETE
+PATCH
+...
+```
+
+---
+
+## 5.14. Важное предупреждение по regex
+
+Java `Pattern` и Go `regexp` отличаются.
+
+Go использует RE2, который не поддерживает:
+
+```text
+lookahead
+lookbehind
+backreferences
+```
+
+Если в Java regex есть что-то вроде:
+
+```text
+(?<=...)
+(?=...)
+\1
+```
+
+то в Go стандартный `regexp` это не поддержит.
+
+Варианты:
+
+1. Переписать regex без lookaround.
+2. Использовать `github.com/dlclark/regexp2`, если нужна PCRE-совместимость.
+3. Использовать ручной парсинг строк.
+
+Рекомендация:
+
+```text
+Сначала извлечь точные Java-regex.
+Проверить, используют ли они lookaround.
+Если нет — использовать стандартный Go regexp.
+Если да — переписать или использовать regexp2.
+```
+
+---
+
+## 5.15. OttLogTrueSendBuffer
+
+Из диаграммы:
+
+```text
+SubmissionPublisher
+buffer size = 30
+timeout = 30s
+check timeout every 100ms
+```
+
+Поведение:
+
+```text
+1. record приходит через submit(record).
+2. record добавляется в buffer.
+3. Если size >= 30 — flush.
+4. Каждые 100ms проверяется:
+   если buffer не пуст и прошло > 30000ms — flush.
+5. При flush:
+   sender.send(batch)
+```
+
+---
+
+### Go-реализация
+
+```go
+type SendBuffer struct {
+    logger     *slog.Logger
+    sender     Sender
+    maxSize    int
+    timeout    time.Duration
+    checkEvery time.Duration
+
+    input      chan Record
+    stopCh     chan struct{}
+    wg         sync.WaitGroup
+}
+```
+
+Внутренний цикл:
+
+```go
+func (b *SendBuffer) Run(ctx context.Context) {
+    ticker := time.NewTicker(b.checkEvery)
+    defer ticker.Stop()
+
+    var records []Record
+    var lastReceived time.Time
+
+    for {
+        select {
+        case <-ctx.Done():
+            b.flush(records)
+            return
+
+        case rec := <-b.input:
+            if len(records) == 0 {
+                lastReceived = time.Now()
+            }
+            records = append(records, rec)
+
+            if len(records) >= b.maxSize {
+                b.flush(records)
+                records = nil
+            }
+
+        case <-ticker.C:
+            if len(records) > 0 && time.Since(lastReceived) >= b.timeout {
+                b.flush(records)
+                records = nil
+            }
+        }
+    }
+}
+```
+
+Но нужно уточнить Java-семантику timeout:
+
+```text
+timeout считается от первой записи в буфере?
+или от последней?
+или от последнего flush?
+```
+
+Из диаграммы похоже:
+
+```text
+elapsed > timeoutMs с момента нахождения записей в буфере
+```
+
+Скорее всего от первого элемента в текущей пачке.
+
+---
+
+## 5.16. OttLogTrueSender
+
+Из диаграммы:
+
+```text
+send(List<OttLogTrueRecord>)
+groupingBy(OttLogTrueRecord::getConfig)
+for each group:
+  sendPacket(config, records)
+```
+
+То есть батч может содержать записи из разных sidecar'ов, но перед отправкой он группируется по конфигу sidecar.
+
+---
+
+### Группировка
+
+Ключ группировки:
+
+```text
+sidecar config
+```
+
+Скорее всего это:
+
+```text
+namespace
+pod
+container
+deploymentUnitKind
+deploymentUnitName
+standCI
+cluster
+replyTopicEvents
+```
+
+Нужно уточнить, какие поля входят в `getConfig()`.
+
+В Go:
+
+```go
+type SendGroupKey struct {
+    Namespace          string
+    Pod                string
+    Container          string
+    DeploymentUnitKind string
+    DeploymentUnitName string
+    StandCI            string
+    Cluster            string
+    ReplyTopicEvents   string
+}
+```
+
+---
+
+### Proto message
+
+Из диаграммы:
+
+```text
+OttLogTrueSidecarBucket
+  addAllEvent(OttLogTrueSidecarEvent[])
+```
+
+Поля event:
+
+```text
+healthcheckRecord
+standType
+standCI
+cluster
+project
+deploymentUnitKind
+deploymentUnitName
+pod
+container
+event:
+  received
+  requestResult
+  requestPath
+  requestMethod
+  moduleIdProvider
+  moduleIdConsumer
+```
+
+Нужно сгенерировать Go-типы из proto:
+
+```text
+OttLogTrueSidecarBucket
+OttLogTrueSidecarEvent
+```
+
+---
+
+### ProtoHeaders
+
+Из диаграммы:
+
+```text
+ProtoHeaders:
+  messageId = UUID.randomUUID()
+  topic = config.replyTopicEvents
+  addressee = uamc-ottlogstrue-consumer
+  zipped = true
+  timestamp = now()
+```
+
+Нужно сохранить:
+
+```text
+topic: config.replyTopicEvents
+addressee: uamc-ottlogstrue-consumer
+zipped: true
+```
+
+---
+
+### zipped = true
+
+Это отдельный критический момент.
+
+Нужно понять:
+
+```text
+Что именно означает zipped=true?
+```
+
+Варианты:
+
+1. Payload сжат gzip.
+2. Payload сжат zip.
+3. Payload обёрнут в архив.
+4. Это только заголовок, а сжатие делает Kafka producer.
+5. Сжатие применяется к protobuf-байтам.
+
+Скорее всего:
+
+```text
+marshal proto -> gzip compress -> send bytes
+```
+
+Но это нужно проверить по Java-коду и consumer'у.
+
+В Go:
+
+```go
+import "compress/gzip"
+```
+
+или:
+
+```go
+import "archive/zip"
+```
+
+в зависимости от реального формата.
+
+---
+
+# 6. Обновлённый lifecycle модуля
+
+---
+
+## 6.1. Startup
+
+```text
+1. Приложение стартует с включённым модулем ottlogstrue.
+2. Создаются singleton-компоненты:
+   - OttLogTrueSender
+   - OttLogTrueParserResolver
+   - NamespaceService
+   - OttLogTrueConfigProvider
+   - OttLogTrueWatcherService
+3. Если scheduler не disabled:
+   - создаётся OttLogTrueScheduler.
+4. Scheduler запускается с fixedDelay.
+```
+
+---
+
+## 6.2. Scheduler tick
+
+```text
+1. Scheduler вызывает configProvider.getConfig().
+2. Если config == null:
+   - отправить Kafka request;
+   - получить response;
+   - convert;
+   - compareAndSet(null, config).
+3. Вызвать watcherService.start(config).
+```
+
+---
+
+## 6.3. WatcherService.start
+
+```text
+For each namespace:
+  if workers contains namespace:
+      skip
+  standCI = namespaceService.getStandCI(namespace)
+  if standCI empty:
+      WARN, skip
+  collector = collectorFactory.new(...)
+  collector.start(namespaceConfig, workers.remove)
+  workers.put(namespace, collector)
+```
+
+---
+
+## 6.4. NamespaceCollector.start
+
+```text
+1. Создать queue capacity 1000.
+2. Запустить processor.
+3. List pods.
+4. Отфильтровать pod'ы по sidecarMask.
+5. Для каждого sidecar:
+   - проверить completedSidecars;
+   - проверить runnedWatchers;
+   - создать watcher;
+   - запустить watcher;
+   - сохранить future/handle.
+6. Запустить pod informer.
+7. Ждать завершения всех watchers.
+8. Закрыть informer.
+9. Вызвать onCompletion(namespace).
+```
+
+---
+
+## 6.5. SidecarWatcher.start
+
+```text
+1. Запустить healthcheck ticker.
+2. Открыть Kubernetes log stream.
+3. Читать строки.
+4. Bucketizer'ом собирать строки.
+5. Отправлять bucket'ы в queue.
+6. По scanPeriod остановить чтение.
+7. После завершения:
+   - отправить остаток buffer;
+   - закрыть log stream;
+   - остановить healthcheck;
+   - вызвать onCompletion(sidecarKey).
+```
+
+---
+
+## 6.6. SidecarProcessor.process
+
+```text
+1. take bucket from queue.
+2. resolver.getParser(bucket).
+3. parser.parseBucketAndHandle(bucket, record).
+4. if all required fields filled OR healthcheck:
+      buffer.submit(record)
+   else:
+      ignore
+```
+
+---
+
+## 6.7. SendBuffer.flush
+
+```text
+1. Собрать records.
+2. Отправить в sender.send(records).
+3. Sender группирует records по sidecar config.
+4. Для каждой группы:
+   - build OttLogTrueSidecarBucket;
+   - build ProtoHeaders;
+   - compress if zipped=true;
+   - send to Kafka.
+```
+
+---
+
+# 7. Обновлённая структура данных
+
+---
+
+## 7.1. ConfigDto
+
+```go
+type ConfigDto struct {
+    ScanPeriod        time.Duration
+    SidecarMask       string
+    ReplyTopicEvents  string
+    HealthcheckPeriod time.Duration
+    Namespaces        []string
+}
+```
+
+---
+
+## 7.2. NamespaceConfigDto
+
+```go
+type NamespaceConfigDto struct {
+    Namespace         string
+    StandCI           string
+    Cluster           string
+    ScanPeriod        time.Duration
+    SidecarMask       string
+    ReplyTopicEvents  string
+    HealthcheckPeriod time.Duration
+}
+```
+
+---
+
+## 7.3. SidecarDto
+
+```go
+type SidecarDto struct {
+    Namespace          string
+    Pod                string
+    Container          string
+    DeploymentUnitKind string
+    DeploymentUnitName string
+    Key                string
+}
+```
+
+---
+
+## 7.4. SidecarConfigDto
+
+Это конфиг, который используется в record и sender:
+
+```go
+type SidecarConfigDto struct {
+    Cluster            string
+    StandType          string
+    StandCI            string
+    Namespace          string
+    Pod                string
+    Container          string
+    DeploymentUnitKind string
+    DeploymentUnitName string
+    ReplyTopicEvents   string
+}
+```
+
+Нужно уточнить, какие поля реально входят в Java `OttLogTrueSidecarConfigDto`.
+
+---
+
+## 7.5. Bucket
+
+```go
+type Bucket struct {
+    Config      SidecarConfigDto
+    Received    time.Time
+    Lines       []string
+    Healthcheck bool
+}
+```
+
+---
+
+## 7.6. Event
+
+```go
+type Event struct {
+    Result             string
+    Method             string
+    Path               string
+    Host               string
+    ModuleIDProvider   string
+    ModuleIDConsumer   string
+    Received           time.Time
+}
+```
+
+---
+
+## 7.7. Record
+
+```go
+type Record struct {
+    Config      SidecarConfigDto
+    Healthcheck bool
+    Event       Event
+}
+```
+
+---
+
+# 8. Обновлённый план миграции именно для OttLogTrueWatcher
+
+---
+
+## Этап A. Контракты и точное поведение
+
+Сделать:
+
+```text
+1. Найти все proto-файлы:
+   - OttLogTrueConfigRequest
+   - OttLogTrueConfigResponse
+   - OttLogTrueSidecarBucket
+   - OttLogTrueSidecarEvent
+
+2. Найти точные regex:
+   - XACML support regex
+   - detectResult regex
+   - module_id regex
+   - host regex
+   - recipient-subject regex
+   - access-subject regex
+   - path regex
+   - method regex
+   - checkLoggerNameRegex
+   - sidecarMask regex
+
+3. Найти точные значения:
+   - queue capacity = 1000?
+   - tailingLines = 1000?
+   - recordsBatchSizeByLogger = 2?
+   - buffer maxSize = 30?
+   - buffer timeout = 30000ms?
+   - buffer check interval = 100ms?
+   - healthcheck period source
+   - scanPeriod source
+   - informer resyncMs
+   - pod ready timeout = 180s
+
+4. Найти точные Kafka headers:
+   - messageId
+   - topic
+   - addressee
+   - zipped
+   - timestamp
+   - sender
+   - direction
+   - messageType
+   - requestType
+
+5. Найти формат сжатия:
+   - gzip?
+   - zip?
+   - другой?
+
+6. Найти формат sidecarKey.
+```
+
+Deliverable:
+
+```text
+OttLogTrueWatcher migration spec
+```
+
+---
+
+## Этап B. Сгенерировать protobuf
+
+Нужно сгенерировать:
+
+```text
+OttLogTrueConfigRequest
+OttLogTrueConfigResponse
+OttLogTrueSidecarBucket
+OttLogTrueSidecarEvent
+```
+
+Проверить:
+
+```text
+enum values
+field numbers
+timestamps
+nullable fields
+packed repeated fields
+```
+
+---
+
+## Этап C. Реализовать config layer
+
+Компоненты:
+
+```text
+OttLogTrueConfigProvider
+OttLogTrueConfigResponseConverter
+```
+
+Проверить:
+
+```text
+1. Запрос уходит с правильными ProtoHeaders.
+2. Ответ корректно десериализуется.
+3. DTO содержит:
+   - scanPeriod
+   - sidecarMask
+   - replyTopicEvents
+   - healthcheckPeriod
+   - namespacesOfCluster
+4. Config кэшируется атомарно.
+```
+
+---
+
+## Этап D. Реализовать scheduler и watcher service
+
+Компоненты:
+
+```text
+OttLogTrueScheduler
+OttLogTrueWatcherService
+NamespaceService
+```
+
+Проверить:
+
+```text
+1. Scheduler запускается, если не disabled.
+2. fixedDelay соответствует Java.
+3. workers map защищает от duplicate namespace.
+4. namespace без label access.firepaws.io/stand пропускается.
+5. callback удаления namespace работает.
+```
+
+---
+
+## Этап E. Реализовать namespace collector
+
+Компоненты:
+
+```text
+OttLogTrueNamespaceCollector
+OttLogTruePodsService
+sidecar detector
+```
+
+Проверить:
+
+```text
+1. Initial pod list работает.
+2. sidecarMask фильтрует контейнеры.
+3. sidecarKey строится так же.
+4. completedSidecars и runnedWatchers дают deduplication.
+5. Informer запускается.
+6. onAdd ждёт Ready 180s.
+7. onUpdate только логирует.
+8. onDelete не создаёт новый watcher.
+9. После завершения всех watchers collector вызывает onCompletion.
+```
+
+---
+
+## Этап F. Реализовать sidecar watcher
+
+Компоненты:
+
+```text
+OttLogTrueSidecarWatcher
+healthcheck scheduler
+log bucketizer
+```
+
+Проверить:
+
+```text
+1. tailingLines=1000.
+2. follow=true.
+3. healthcheck bucket отправляется периодически.
+4. checkLoggerNameRegex работает.
+5. bucket size = 2.
+6. Новый logger match закрывает предыдущий buffer.
+7. Остаток buffer отправляется при завершении.
+8. scanPeriod останавливает watcher.
+9. onCompletion удаляет sidecar из runnedWatchers.
+10. completedSidecars пополняется.
+```
+
+---
+
+## Этап G. Реализовать processor и parser chain
+
+Компоненты:
+
+```text
+OttLogTrueSidecarProcessor
+OttLogTrueParserResolver
+OttLogTrueParserV1Impl
+OttLogTrueParserDefaultImpl
+```
+
+Проверить:
+
+```text
+1. queue.take() корректно блокируется.
+2. healthcheck bucket обрабатывается.
+3. V01 выбирается только для XACML.
+4. DEFAULT используется как fallback.
+5. String.join(" ", lines) совпадает с Java.
+6. detectResult возвращает PERMIT/DENY/UNKNOWN.
+7. fields извлекаются точно так же.
+8. record отправляется только если:
+   - заполнены moduleIdProvider, method, moduleIdConsumer, path;
+   - или healthcheck=true.
+```
+
+---
+
+## Этап H. Реализовать send buffer и sender
+
+Компоненты:
+
+```text
+OttLogTrueSendBuffer
+OttLogTrueSender
+```
+
+Проверить:
+
+```text
+1. buffer flush при size >= 30.
+2. buffer flush при timeout 30s.
+3. check timeout каждые 100ms.
+4. sender группирует records по config.
+5. для каждой группы строится OttLogTrueSidecarBucket.
+6. ProtoHeaders содержат:
+   - messageId
+   - topic = replyTopicEvents
+   - addressee = uamc-ottlogstrue-consumer
+   - zipped = true
+   - timestamp
+7. payload сжимается так же, как Java.
+8. Kafka producer отправляет без ожидания response.
+```
+
+---
+
+## Этап I. Graceful shutdown
+
+Нужно реализовать корректное завершение:
+
+```text
+1. Остановить scheduler.
+2. Остановить watcher service.
+3. Остановить namespace collectors.
+4. Остановить sidecar watchers.
+5. Закрыть log streams.
+6. Остановить healthcheck tickers.
+7. Дать watchers отправить финальные bucket'ы.
+8. Закрыть queue.
+9. Дать processor_drain'уть queue.
+10. Flush send buffer.
+11. Flush Kafka producer.
+12. Закрыть informer'ы.
+```
+
+Важно не закрыть queue раньше времени, иначе можно потерять финальные bucket'ы.
+
+---
+
+# 9. Обновлённые риски по OttLogTrueWatcher
+
+---
+
+## 9.1. Риск: несовпадение regex
+
+Особенно критично:
+
+```text
+detectResult
+extractModuleIdProvider
+extractHost
+extractModuleIdConsumer
+extractPath
+extractMethod
+checkLoggerNameRegex
+sidecarMask
+```
+
+Что делать:
+
+```text
+1. Выгрузить точные regex из Java.
+2. Подготовить golden log examples.
+3. Прогнать Java parser и Go parser на одних и тех же строках.
+4. Сравнить результаты.
+```
+
+---
+
+## 9.2. Риск: Java Pattern vs Go RE2
+
+Если Java использует lookaround, Go standard regexp не подойдёт.
+
+Что делать:
+
+```text
+Проверить regex.
+При необходимости переписать.
+Или использовать regexp2.
+```
+
+---
+
+## 9.3. Риск: bucket size = 2
+
+Из диаграммы видно:
+
+```text
+bufferIsFull(size == 2)
+```
+
+Это странно для multiline-логов. Нужно понять:
+
+```text
+Почему именно 2?
+Это фиксировано?
+Это конфигурируется?
+Это относится только к определённому logger'у?
+```
+
+Если Java действительно закрывает bucket после 2 строк, Go должен делать так же.
+
+---
+
+## 9.4. Риск: tailingLines(1000)
+
+Нужно уточнить:
+
+```text
+Это последние 1000 строк?
+Или чтение с 1000-й строки?
+```
+
+В Kubernetes API `TailLines=1000` означает последние 1000 строк.
+
+---
+
+## 9.5. Риск: scanPeriod
+
+Нужно уточнить:
+
+```text
+scanPeriod считается от старта pod?
+от старта watcher?
+от старта collector?
+от времени конфигурации?
+```
+
+Из диаграммы:
+
+```text
+scanPeriodFromStartPodSeconds
+```
+
+Похоже на время от старта pod. Нужно проверить Java.
+
+---
+
+## 9.6. Риск: completedSidecars
+
+Если sidecar завершился, он добавляется в `completedSidecars`.
+
+Вопрос:
+
+```text
+Должен ли он перезапускаться при новом scheduler tick?
+Должен ли он перезапускаться при пересоздании pod?
+Как очищается completedSidecars?
+```
+
+Если очистить неправильно, возможны:
+
+```text
+- повторный сбор логов;
+- пропуск логов;
+- утечка памяти;
+- невозможность перезапуска.
+```
+
+---
+
+## 9.7. Риск: informer handler blocking
+
+В Go нельзя блокировать informer handler.
+
+Нужно:
+
+```text
+onAdd -> go waitReadyAndStartWatcher
+```
+
+---
+
+## 9.8. Риск: backpressure
+
+Queue capacity = 1000.
+
+Если processor не успевает:
+
+```text
+watcher блокируется на queue.put
+log stream может начать backpressure
+```
+
+Нужны метрики:
+
+```text
+queue depth
+queue full events
+bucket drop events
+processor lag
+```
+
+---
+
+## 9.9. Риск: SendBuffer semantics
+
+Java `SubmissionPublisher` имеет собственную семантику.
+
+Нужно понять:
+
+```text
+submit блокирующий или неблокирующий?
+что происходит при overflow?
+есть ли rejection handler?
+как обрабатываются ошибки отправки?
+```
+
+В Go нужно явно выбрать:
+
+```text
+blocking submit
+non-blocking submit with drop
+bounded channel with timeout
+```
+
+---
+
+## 9.10. Риск: zipped payload
+
+Нужно точно знать:
+
+```text
+gzip или zip
+какой формат заголовков
+какой уровень сжатия
+какой consumer ожидает формат
+```
+
+---
+
+# 10. Обновлённый backlog миграции всего агента
+
+С учётом новых диаграмм общий план лучше скорректировать так.
+
+---
+
+## Milestone 1. Core contracts
+
+```text
+Kafka
+protobuf
+ProtoHeaders
+request/response
+topics
+compression
+```
+
+---
+
+## Milestone 2. Core infrastructure
+
+```text
+config
+logging
+metrics
+health
+kafka client
+core client
+kubernetes client
+s3 client
+cache
+keyedlock
+batcher
+regex cache
+```
+
+---
+
+## Milestone 3. Simple watchers
+
+Например:
+
+```text
+eventswatcher
+metricswatcher
+resourcewatcher
+```
+
+Цель:
+
+```text
+обкатать client-go, informers, Kafka sending, tests
+```
+
+---
+
+## Milestone 4. OttLogTrueWatcher
+
+Только после core infrastructure.
+
+Причины:
+
+```text
+много concurrency;
+много regex;
+много Kubernetes log streaming;
+много batching;
+много contract details;
+высокий риск несовместимости.
+```
+
+---
+
+## Milestone 5. Control modules
+
+```text
+loglevel
+kubeapi
+ailogscollector
+```
+
+---
+
+## Milestone 6. E2E and rollout
+
+```text
+contract tests
+integration tests
+shadow mode
+canary
+production rollout
+```
+
+---
+
+# 11. Детальный backlog для OttLogTrueWatcher
+
+Ниже — практический список задач.
+
+---
+
+## 11.1. Analysis
+
+```text
+1. Найти OttLogTrueWatcherAppConfig.
+2. Найти все бины модуля.
+3. Найти все properties.
+4. Найти default values.
+5. Найти proto files.
+6. Найти regex patterns.
+7. Найти exact sidecarKey format.
+8. Найти exact deploymentUnit detection.
+9. Найти exact zipped compression.
+10. Найти exact Kafka headers.
+11. Найти exact config request topic/addressee.
+12. Найти exact response topic usage.
+13. Найти exact healthcheck period units.
+14. Найти exact scanPeriod units.
+15. Найти exact informer resync period.
+```
+
+---
+
+## 11.2. Proto
+
+```text
+1. Добавить proto files в buf.
+2. Сгенерировать Go code.
+3. Проверить совместимость с Java.
+4. Добавить golden binary tests.
+```
+
+---
+
+## 11.3. Config
+
+```text
+1. Реализовать OttLogTrueConfigRequest builder.
+2. Реализовать Kafka request-response.
+3. Реализовать OttLogTrueConfigResponse converter.
+4. Реализовать atomic compareAndSet config.
+5. Покрыть unit tests.
+```
+
+---
+
+## 11.4. Scheduler
+
+```text
+1. Реализовать fixedDelay scheduler.
+2. Реализовать disable flag.
+3. Реализовать graceful stop.
+4. Покрыть tests.
+```
+
+---
+
+## 11.5. Namespace layer
+
+```text
+1. Реализовать NamespaceService.
+2. Реализовать label access.firepaws.io/stand extraction.
+3. Реализовать WatcherService.
+4. Реализовать workers map.
+5. Реализовать onCompletion remove.
+```
+
+---
+
+## 11.6. Collector
+
+```text
+1. Реализовать NamespaceCollector factory.
+2. Реализовать queue creation.
+3. Реализовать processor start.
+4. Реализовать initial pod list.
+5. Реализовать pod filter by sidecarMask.
+6. Реализовать sidecar detection.
+7. Реализовать deduplication.
+8. Реализовать watcher factory.
+9. Реализовать informer.
+10. Реализовать waitReady 180s.
+11. Реализовать completion wait.
+```
+
+---
+
+## 11.7. Watcher
+
+```text
+1. Реализовать Kubernetes log stream.
+2. Реализовать tailingLines=1000.
+3. Реализовать healthcheck ticker.
+4. Реализовать bucketizer.
+5. Реализовать scanPeriod stop.
+6. Реализовать final flush.
+7. Реализовать onCompletion.
+```
+
+---
+
+## 11.8. Processor
+
+```text
+1. Реализовать queue consumer.
+2. Реализовать parser resolver.
+3. Реализовать V01 parser.
+4. Реализовать DEFAULT parser.
+5. Реализовать record validation.
+6. Реализовать submit to buffer.
+```
+
+---
+
+## 11.9. Parser
+
+```text
+1. Перенести XACML detection.
+2. Перенести detectResult.
+3. Перенести moduleIdProviderUni.
+4. Перенести moduleIdProvider fallback.
+5. Перенести host.
+6. Перенести moduleIdConsumer.
+7. Перенести path.
+8. Перенести method.
+9. Добавить golden tests.
+```
+
+---
+
+## 11.10. Buffer/Sender
+
+```text
+1. Реализовать SendBuffer.
+2. Реализовать flush by size.
+3. Реализовать flush by timeout.
+4. Реализовать flush on shutdown.
+5. Реализовать grouping by config.
+6. Реализовать proto builder.
+7. Реализовать compression.
+8. Реализовать Kafka send.
+```
+
+---
+
+# 12. Тестирование OttLogTrueWatcher
+
+---
+
+## 12.1. Unit tests
+
+### Bucketizer
+
+Проверить:
+
+```text
+1. Первая строка совпадает с logger regex → buffer открыт.
+2. Вторая строка не совпадает → добавлена.
+3. size == 2 → bucket закрыт.
+4. Новая совпадающая строка закрывает старый buffer.
+5. Несовпадающая строка до начала лога игнорируется.
+6. При завершении отправляется остаток.
+```
+
+---
+
+### Parser V01
+
+Проверить:
+
+```text
+1. XACML header detected.
+2. PERMIT detected.
+3. DENY detected.
+4. UNKNOWN detected.
+5. moduleIdProvider extracted.
+6. moduleIdProvider fallback extracted.
+7. host extracted.
+8. moduleIdConsumer extracted.
+9. path extracted.
+10. method extracted.
+11. received установлен.
+```
+
+---
+
+### Parser resolver
+
+Проверить:
+
+```text
+1. XACML bucket → V01.
+2. healthcheck bucket → DEFAULT.
+3. non-XACML bucket → DEFAULT.
+```
+
+---
+
+### SendBuffer
+
+Проверить:
+
+```text
+1. flush при 30 записей.
+2. flush через 30 секунд.
+3. flush при shutdown.
+4. group by sidecar config.
+5. нет потери записей.
+```
+
+---
+
+### Sender
+
+Проверить:
+
+```text
+1. Proto message correct.
+2. ProtoHeaders correct.
+3. topic = replyTopicEvents.
+4. addressee = uamc-ottlogstrue-consumer.
+5. zipped = true.
+6. payload decompresses correctly.
+```
+
+---
+
+## 12.2. Integration tests
+
+Поднять:
+
+```text
+fake Kubernetes client
+mock Kafka
+test pods
+test logs
+```
+
+Проверить:
+
+```text
+1. config request/response.
+2. namespace selection.
+3. pod filtering.
+4. watcher start.
+5. log reading.
+6. healthcheck sending.
+7. parser processing.
+8. buffer flush.
+9. Kafka send.
+```
+
+---
+
+## 12.3. Contract tests
+
+Нужно сравнить Java и Go:
+
+```text
+1. Один и тот же лог.
+2. Java parser → record.
+3. Go parser → record.
+4. Результаты идентичны.
+```
+
+И:
+
+```text
+1. Java sender → Kafka bytes.
+2. Go sender → Kafka bytes.
+3. Consumer может прочитать оба варианта.
+```
+
+---
+
+## 12.4. E2E tests
+
+В Kubernetes:
+
+```text
+1. Создать namespace с label access.firepaws.io/stand.
+2. Создать pod с OTT sidecar container.
+3. sidecar пишет XACML-логи.
+4. Агент должен:
+   - найти namespace;
+   - найти pod;
+   - найти sidecar;
+   - начать чтение;
+   - распарсить;
+   - отправить в Kafka.
+```
+
+Проверить:
+
+```text
+PERMIT event
+DENY event
+healthcheck event
+batch size flush
+timeout flush
+pod delete
+pod restart
+scanPeriod stop
+```
+
+---
+
+# 13. Метрики для OttLogTrueWatcher
+
+Рекомендую добавить:
+
+```text
+ottlogstrue_scheduler_ticks_total
+ottlogstrue_scheduler_errors_total
+ottlogstrue_config_get_total
+ottlogstrue_config_get_errors_total
+ottlogstrue_namespaces_total
+ottlogstrue_namespace_workers_active
+ottlogstrue_namespace_skipped_total
+ottlogstrue_pods_discovered_total
+ottlogstrue_sidecars_discovered_total
+ottlogstrue_sidecar_watchers_active
+ottlogstrue_sidecar_watchers_completed_total
+ottlogstrue_sidecar_watchers_errors_total
+ottlogstrue_log_lines_total
+ottlogstrue_buckets_created_total
+ottlogstrue_queue_depth
+ottlogstrue_queue_full_total
+ottlogstrue_processor_processed_total
+ottlogstrue_parser_selected_total{parser="v01|default"}
+ottlogstrue_records_total{result="PERMIT|DENY|UNKNOWN"}
+ottlogstrue_records_submitted_total
+ottlogstrue_records_ignored_total
+ottlogstrue_healthcheck_sent_total
+ottlogstrue_buffer_flush_total{reason="size|timeout|shutdown"}
+ottlogstrue_buffer_records_flushed_total
+ottlogstrue_kafka_send_total
+ottlogstrue_kafka_send_errors_total
+ottlogstrue_kafka_send_latency_seconds
+```
+
+---
+
+# 14. Вопросы, которые теперь стали критичными
+
+Чтобы можно было проектировать Go-реализацию без опасных допущений, ответь, пожалуйста, на следующие вопросы.
+
+---
+
+## 14.1. По конфигурации
+
+1. В каких единицах приходит `scanPeriod`?
+2. В каких единицах приходит `healthcheckPeriod`?
+3. `fixedDelay` scheduler — минуты?
+4. `resyncMs` informer — миллисекунды?
+5. `recordsBatchSizeByLogger = 2` — это константа или конфиг?
+6. `queue capacity = 1000` — константа или конфиг?
+7. `buffer maxSize = 30` — константа или конфиг?
+8. `buffer timeout = 30000ms` — константа или конфиг?
+9. `buffer check interval = 100ms` — константа или конфиг?
+10. `tailingLines = 1000` — константа или конфиг?
+
+---
+
+## 14.2. По Kafka
+
+1. В какой топик отправляется `OttLogTrueConfigRequest`?
+2. Какой `addressee` у config request?
+3. Какой `requestType` у config request?
+4. Какой `messageType` у config request/response?
+5. Какой `topicForResponse` используется?
+6. Какой timeout у config request-response?
+7. Есть ли retry у config request?
+8. Какой формат сжатия при `zipped=true`?
+9. `zipped=true` применяется только к body или к всему сообщению?
+10. Какой Kafka producer acks используется?
+11. Нужна ли гарантия доставки healthcheck-событий?
+
+---
+
+## 14.3. По Kubernetes
+
+1. `tailingLines(1000)` — это последние 1000 строк?
+2. Нужно ли читать previous container logs?
+3. Что происходит, если контейнер рестартует?
+4. Нужно ли перезапускать watcher после container restart?
+5. `scanPeriodFromStartPodSeconds` считается от `pod.status.startTime`?
+6. Или от времени запуска watcher?
+7. Нужно ли ждать Ready для existing pods при первом запуске?
+8. Или только для новых pod'ов из informer `onAdd`?
+9. Какой точный формат `sidecarKey`?
+10. Как определяется `deploymentUnitKind`?
+11. Как определяется `deploymentUnitName`?
+12. Используется ли `OwnerReferences`, labels, annotations?
+13. `sidecarMask` — это regex, glob или plain substring?
+14. `checkLoggerNameRegex` — точный regex?
+15. Informer `resyncMs` берётся из конфига?
+
+---
+
+## 14.4. По парсингу
+
+1. Можно ли получить точные Java regex?
+2. Используются ли lookahead/lookbehind?
+3. Какие флаги Pattern используются?
+   - CASE_INSENSITIVE
+   - DOTALL
+   - MULTILINE
+   - UNICODE_CASE
+4. `String.join(" ", lines)` всегда соединяет через один пробел?
+5. Может ли один bucket содержать несколько XACML-событий?
+6. Может ли одно XACML-событие занимать больше 2 строк?
+7. Почему bucket size = 2?
+8. `host` обязателен для отправки?
+9. `result=UNKNOWN` когда-нибудь отправляется, кроме healthcheck?
+10. `received` для healthcheck должен быть `now()`?
+
+---
+
+## 14.5. По буферу и отправке
+
+1. `SendBuffer` общий на весь агент или на каждый namespace?
+2. `SubmissionPublisher.submit` блокирующий или неблокирующий?
+3. Что делать при overflow?
+4. Допустима ли потеря records?
+5. Нужен ли retry при Kafka send error?
+6. Если одна группа в batch не отправилась, что делать с другими?
+7. Нужен ли dead letter queue?
+8. Нужна ли отправка partial batch при shutdown?
+
+---
+
+## 14.6. По lifecycle
+
+1. `completedSidecars` живёт только внутри одного collector?
+2. Или глобально на агент?
+3. Когда `completedSidecars` очищается?
+4. Может ли один sidecar быть повторно собран?
+5. Что делает scheduler, если предыдущий цикл ещё не завершился?
+6. Нужно ли принудительно останавливать старые watchers при новом scheduler tick?
+7. Должен ли collector завершаться, если все watchers завершились?
+8. Что происходит, если namespace удаляется во время работы?
+
+---
+
+# 15. Моя обновлённая рекомендация
+
+С учётом этих диаграмм я бы не начинал миграцию с `OttLogTrueWatcher`, если есть другие более простые модули.
+
+Лучший порядок:
+
+```text
+1. Core infrastructure.
+2. Kafka + protobuf + ProtoHeaders.
+3. Kubernetes client.
+4. eventswatcher / metricswatcher / resourcewatcher.
+5. Только потом OttLogTrueWatcher.
+```
+
+Почему:
+
+```text
+OttLogTrueWatcher содержит почти все сложные паттерны:
+- Kafka request-response;
+- Kubernetes informers;
+- Kubernetes log streaming;
+- prototype-like objects;
+- concurrent queues;
+- regex parsing;
+- batching;
+- compression;
+- healthchecks;
+- callbacks;
+- graceful shutdown.
+```
+
+Если сначала обкатать инфраструктуру на более простых модулях, `OttLogTrueWatcher` пойдёт быстрее и безопаснее.
+
+---
+
+# 16. Итог
+
+Обновлённый план теперь должен учитывать, что `OttLogTrueWatcher` — это отдельный вертикальный pipeline, который нужно мигрировать как самостоятельный подпроект.
+
+Ключевые вещи, которые нужно зафиксировать отдельно:
+
+```text
+1. Точные regex.
+2. Точные proto-сообщения.
+3. Точный формат zipped payload.
+4. Точные Kafka headers.
+5. Точный sidecarKey.
+6. Точный deploymentUnit detection.
+7. Точные lifecycle completedSidecars/runnedWatchers.
+8. Точные timeout/batch/queue параметры.
+9. Точную семантику scanPeriod.
+10. Точную семантику tailingLines.
+```
+
+Если хочешь, следующим шагом я могу сделать:
+
+1. **детальный technical design Go-модуля `ottlogstruewatcher`**,  
+2. **схему Go-пакетов и интерфейсов**,  
+3. **backlog по задачам с декомпозицией до конкретных файлов**,  
+4. или **черновик Go-кода для scheduler/config provider/collector/watcher**.

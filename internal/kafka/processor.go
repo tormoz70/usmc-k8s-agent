@@ -11,6 +11,7 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/command"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 	"github.com/usmc/usmc-k8s-agent/internal/result"
+	"github.com/usmc/usmc-k8s-agent/internal/transport"
 )
 
 // CommandExecutor runs a decoded command.
@@ -27,6 +28,7 @@ type Processor struct {
 	metrics     *observability.Metrics
 	log         *slog.Logger
 	commitFirst bool
+	dual        *transport.DualAdapter
 }
 
 func NewProcessor(consumer *Consumer, publisher *Publisher, executor CommandExecutor, guard *CommandGuard, commitOnReceive bool, metrics *observability.Metrics, log *slog.Logger) *Processor {
@@ -44,6 +46,11 @@ func NewProcessor(consumer *Consumer, publisher *Publisher, executor CommandExec
 	}
 }
 
+// SetDualAdapter enables JSON/protobuf dual-stack routing.
+func (p *Processor) SetDualAdapter(d *transport.DualAdapter) {
+	p.dual = d
+}
+
 // Run processes messages until context cancellation.
 func (p *Processor) Run(ctx context.Context) error {
 	for {
@@ -58,6 +65,41 @@ func (p *Processor) Run(ctx context.Context) error {
 }
 
 func (p *Processor) handleMessage(ctx context.Context, msg kafkago.Message) error {
+	if p.dual != nil {
+		return p.handleDual(ctx, msg)
+	}
+	return p.handleJSON(ctx, msg)
+}
+
+func (p *Processor) handleDual(ctx context.Context, msg kafkago.Message) error {
+	if p.commitFirst {
+		if err := p.consumer.CommitMessage(ctx, msg); err != nil {
+			return err
+		}
+	}
+	started := time.Now()
+	resp, err := p.dual.HandleMessage(ctx, msg)
+	if err != nil {
+		p.log.Warn("dual handle failed", "error", err)
+		if !p.commitFirst {
+			_ = p.commit(ctx, msg)
+		}
+		return err
+	}
+	if resp != nil {
+		reply := headerValue(msg.Headers, headerReplyTopic)
+		corr := headerValue(msg.Headers, headerCorrelationID)
+		if reply != "" && corr != "" {
+			if err := p.publisher.PublishResponse(ctx, reply, corr, resp); err != nil {
+				return err
+			}
+		}
+		p.recordCommand("dual", resp.Status, started)
+	}
+	return p.commit(ctx, msg)
+}
+
+func (p *Processor) handleJSON(ctx context.Context, msg kafkago.Message) error {
 	cmd, meta, err := ParseCommand(msg)
 	if err != nil {
 		p.log.Warn("invalid kafka message", "error", err)
@@ -87,7 +129,6 @@ func (p *Processor) handleMessage(ctx context.Context, msg kafkago.Message) erro
 	started := time.Now()
 	resp, err := p.executor.Handle(ctx, cmd, meta)
 	if err != nil {
-		// Always reply + commit so UI/core never hang waiting on a correlation_id.
 		failed := result.Failed(cmd.CommandID, meta.CorrelationID, "ExecuteFailed", "AGENT_EXECUTE_ERROR", err.Error(), started.UTC(), time.Now().UTC())
 		if pubErr := p.publisher.PublishResponse(ctx, meta.ReplyTopic, meta.CorrelationID, failed); pubErr != nil {
 			return fmt.Errorf("execute: %w; publish failed reply: %v", err, pubErr)

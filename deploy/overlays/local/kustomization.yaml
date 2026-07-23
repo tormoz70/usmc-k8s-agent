@@ -57,7 +57,7 @@ patches:
                   - name: LOGS_TEMP_DIR
                     value: /var/tmp/logs-collect
                   - name: S3_ENDPOINT
-                    value: http://host.docker.internal:9000
+                    value: http://host.docker.internal:9010
                   - name: S3_FORCE_PATH_STYLE
                     value: "true"
                   - name: KAFKA_BROKERS

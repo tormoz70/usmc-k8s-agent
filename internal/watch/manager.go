@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -36,23 +37,26 @@ type informerKey struct {
 
 // Manager owns in-memory watch subscriptions and shared informers.
 type Manager struct {
-	clusterID   string
+	clusterID    string
 	defaultTopic string
-	bundle      *k8s.DynamicBundle
-	policy      *policy.Engine
-	publisher   EventPublisher
-	log         *slog.Logger
+	bundle       *k8s.DynamicBundle
+	policy       *policy.Engine
+	publisher    EventPublisher
+	log          *slog.Logger
 
-	mu          sync.Mutex
-	subs        map[string]*subscription
-	informers   map[informerKey]cache.SharedIndexInformer
-	factories   map[informerKey]dynamicinformer.DynamicSharedInformerFactory
+	mu         sync.Mutex
+	subs       map[string]*subscription
+	informers  map[informerKey]cache.SharedIndexInformer
+	factories  map[informerKey]dynamicinformer.DynamicSharedInformerFactory
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
 }
 
 func NewManager(clusterID, defaultTopic string, bundle *k8s.DynamicBundle, engine *policy.Engine, publisher EventPublisher, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	rootCtx, rootCancel := context.WithCancel(context.Background())
 	return &Manager{
 		clusterID:    clusterID,
 		defaultTopic: defaultTopic,
@@ -63,6 +67,8 @@ func NewManager(clusterID, defaultTopic string, bundle *k8s.DynamicBundle, engin
 		subs:         make(map[string]*subscription),
 		informers:    make(map[informerKey]cache.SharedIndexInformer),
 		factories:    make(map[informerKey]dynamicinformer.DynamicSharedInformerFactory),
+		rootCtx:      rootCtx,
+		rootCancel:   rootCancel,
 	}
 }
 
@@ -156,7 +162,7 @@ func (m *Manager) Unsubscribe(subscriptionID string) error {
 	return nil
 }
 
-// StopAll cancels every active subscription (leader shutdown).
+// StopAll cancels every active subscription and shared informers (leader shutdown).
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -164,6 +170,12 @@ func (m *Manager) StopAll() {
 		sub.cancel()
 		delete(m.subs, id)
 	}
+	if m.rootCancel != nil {
+		m.rootCancel()
+	}
+	m.informers = make(map[informerKey]cache.SharedIndexInformer)
+	m.factories = make(map[informerKey]dynamicinformer.DynamicSharedInformerFactory)
+	m.rootCtx, m.rootCancel = context.WithCancel(context.Background())
 }
 
 // ActiveCount returns the number of active watch subscriptions.
@@ -194,7 +206,10 @@ func (m *Manager) getOrCreateInformer(ctx context.Context, key informerKey, gvr 
 	m.informers[key] = inf
 	m.factories[key] = factory
 
-	go factory.Start(ctx.Done())
+	// Informer lifetime is manager-scoped, not per-subscription. Tying Start to the
+	// subscription context stopped the factory on unsubscribe and left a dead
+	// informer cached for later re-subscribes.
+	go factory.Start(m.rootCtx.Done())
 	return inf, nil
 }
 
@@ -317,11 +332,34 @@ func containerRestartMap(statuses []interface{}) map[string]int32 {
 		if name == "" {
 			continue
 		}
-		if rc, ok := m["restartCount"].(int64); ok {
-			out[name] = int32(rc)
+		if rc, ok := asInt32(m["restartCount"]); ok {
+			out[name] = rc
 		}
 	}
 	return out
+}
+
+func asInt32(v interface{}) (int32, bool) {
+	switch n := v.(type) {
+	case int32:
+		return n, true
+	case int64:
+		return int32(n), true
+	case int:
+		return int32(n), true
+	case float64:
+		return int32(n), true
+	case float32:
+		return int32(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int32(i), true
+	default:
+		return 0, false
+	}
 }
 
 func (m *Manager) publish(ctx context.Context, payload *SubscribePayload, ev *ClusterEvent) {
