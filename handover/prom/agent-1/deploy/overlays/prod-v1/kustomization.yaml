@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PROD agent v1: Deployments only, GetLogs backend.
+# Mutually exclusive with overlays/prod-v2 — install exactly one per cluster.
+resources:
+  - ../prod
+
+patches:
+  - target:
+      kind: Deployment
+      name: agent-service
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-service
+      spec:
+        template:
+          spec:
+            containers:
+              - name: agent
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v1
+                  - name: LOGS_BACKEND
+                    value: api
+  - target:
+      kind: Deployment
+      name: egress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: egress
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v1
+  - target:
+      kind: Deployment
+      name: ingress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ingress
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v1

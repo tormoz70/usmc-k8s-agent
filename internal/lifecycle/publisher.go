@@ -8,12 +8,14 @@ import (
 
 // Event is published to agent.lifecycle topic.
 type Event struct {
-	SchemaVersion   string    `json:"schema_version"`
-	EventType       string    `json:"event_type"`
-	ClusterID       string    `json:"cluster_id"`
-	AgentInstanceID string    `json:"agent_instance_id"`
-	Leader          bool      `json:"leader"`
-	ObservedAt      time.Time `json:"observed_at"`
+	SchemaVersion        string    `json:"schema_version"`
+	EventType            string    `json:"event_type"`
+	ClusterID            string    `json:"cluster_id"`
+	AgentInstanceID      string    `json:"agent_instance_id"`
+	AgentImplementation  string    `json:"agent_implementation,omitempty"`
+	LogsBackend          string    `json:"logs_backend,omitempty"`
+	Leader               bool      `json:"leader"`
+	ObservedAt           time.Time `json:"observed_at"`
 }
 
 const (
@@ -31,25 +33,27 @@ func NewPublisher(topic string, publish func(ctx context.Context, topic, key str
 	return &Publisher{topic: topic, publish: publish}
 }
 
-func (p *Publisher) PublishStarted(ctx context.Context, clusterID, instanceID string, leader bool) error {
-	return p.publishEvent(ctx, EventTypeStarted, clusterID, instanceID, leader)
+func (p *Publisher) PublishStarted(ctx context.Context, clusterID, instanceID, implementation, logsBackend string, leader bool) error {
+	return p.publishEvent(ctx, EventTypeStarted, clusterID, instanceID, implementation, logsBackend, leader)
 }
 
-func (p *Publisher) PublishLeaderLost(ctx context.Context, clusterID, instanceID string) error {
-	return p.publishEvent(ctx, EventTypeLeaderChanged, clusterID, instanceID, false)
+func (p *Publisher) PublishLeaderLost(ctx context.Context, clusterID, instanceID, implementation, logsBackend string) error {
+	return p.publishEvent(ctx, EventTypeLeaderChanged, clusterID, instanceID, implementation, logsBackend, false)
 }
 
-func (p *Publisher) publishEvent(ctx context.Context, eventType, clusterID, instanceID string, leader bool) error {
+func (p *Publisher) publishEvent(ctx context.Context, eventType, clusterID, instanceID, implementation, logsBackend string, leader bool) error {
 	if p == nil || p.publish == nil {
 		return nil
 	}
 	ev := Event{
-		SchemaVersion:   "v1",
-		EventType:       eventType,
-		ClusterID:       clusterID,
-		AgentInstanceID: instanceID,
-		Leader:          leader,
-		ObservedAt:      time.Now().UTC(),
+		SchemaVersion:       "v1",
+		EventType:           eventType,
+		ClusterID:           clusterID,
+		AgentInstanceID:     instanceID,
+		AgentImplementation: implementation,
+		LogsBackend:         logsBackend,
+		Leader:              leader,
+		ObservedAt:          time.Now().UTC(),
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {

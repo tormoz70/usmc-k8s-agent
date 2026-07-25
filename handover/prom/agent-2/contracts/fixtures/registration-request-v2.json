@@ -1,0 +1,23 @@
+{
+  "headers": {
+    "messageId": "msg-2",
+    "correlationId": "corr-2",
+    "topic": "uamc-agent.ssl.request",
+    "topicForResponse": "uamc-agent.ssl.response.test-v2-uamc-agent",
+    "direction": "REQUEST",
+    "addressee": "uamc-core",
+    "sender": "test-v2",
+    "messageType": "AgentRegistrationRequest",
+    "requestType": "REGISTER",
+    "timestamp": "2026-07-25T00:00:00Z",
+    "zipped": "false"
+  },
+  "body": {
+    "cluster_id": "test-v2",
+    "agent_instance_id": "agent-v2-1",
+    "cluster_name": "test-v2",
+    "modules": ["api", "watch", "logs"],
+    "agent_implementation": "v2",
+    "logs_backend": "nodelocal"
+  }
+}

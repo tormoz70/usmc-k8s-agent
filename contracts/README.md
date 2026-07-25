@@ -26,6 +26,16 @@ Wire headers use the Java-style names (see `internal/protoheaders`):
 
 See [`fixtures/`](fixtures/) for synthetic round-trip samples. Replace with Java-captured bytes when available.
 
+| Fixture | Purpose |
+| --- | --- |
+| `registration-request.json` | Agent v1 register (`agent_implementation=v1`, `logs_backend=api`) |
+| `registration-request-v2.json` | Agent v2 register (`agent_implementation=v2`, `logs_backend=nodelocal`) |
+| `registration-response-rejected.json` | Core rejects second agent on same `cluster_id` (`AgentAlreadyRegistered`) |
+
+## Agent implementations (v1 / v2)
+
+One Kubernetes cluster in PROD must run **exactly one** agent (v1 or v2). Test stands may run both in separate namespaces with distinct `cluster_id` / request topics. See [docs/agent-v1-v2.md](../docs/agent-v1-v2.md).
+
 ## Import checklist (when Java artifacts arrive)
 
 1. Copy official `.proto` into `api/proto/` (overwrite stubs).

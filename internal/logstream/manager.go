@@ -12,9 +12,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/usmc/usmc-k8s-agent/internal/command"
+	"github.com/usmc/usmc-k8s-agent/internal/config"
+	"github.com/usmc/usmc-k8s-agent/internal/nodelocal"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 	"github.com/usmc/usmc-k8s-agent/internal/policy"
 )
@@ -72,6 +75,8 @@ type Manager struct {
 	backlogMax   int
 	metrics      *observability.Metrics
 	log          *slog.Logger
+	backend      string
+	nodeClient   *nodelocal.NodeClient
 
 	mu      sync.Mutex
 	subs    map[string]*subscription
@@ -98,9 +103,17 @@ func NewManager(clusterID, defaultTopic string, kube kubernetes.Interface, engin
 		backlogMax:   backlogMax,
 		metrics:      metrics,
 		log:          log,
+		backend:      config.LogsBackendAPI,
 		subs:         make(map[string]*subscription),
 		podSubs:      make(map[string]string),
 	}
+}
+
+// WithNodeLocal enables streaming via logs-node-agent DaemonSet pods.
+func (m *Manager) WithNodeLocal(client *nodelocal.NodeClient) *Manager {
+	m.backend = config.LogsBackendNodeLocal
+	m.nodeClient = client
+	return m
 }
 
 func ParseStartPayload(raw json.RawMessage) (*StartPayload, error) {
@@ -220,19 +233,7 @@ func (m *Manager) run(ctx context.Context, sub *subscription) {
 	}()
 
 	payload := sub.payload
-	opts := &corev1.PodLogOptions{
-		Container: payload.Container,
-		Follow:    payload.Follow,
-	}
-	if payload.TailLines != nil {
-		opts.TailLines = payload.TailLines
-	}
-	if payload.SinceSeconds != nil {
-		opts.SinceSeconds = payload.SinceSeconds
-	}
-
-	req := m.kube.CoreV1().Pods(payload.Namespace).GetLogs(payload.Pod, opts)
-	stream, err := req.Stream(ctx)
+	stream, err := m.openLogStream(ctx, payload)
 	if err != nil {
 		m.log.Warn("log stream open failed", "subscription_id", payload.SubscriptionID, "error", err)
 		return
@@ -334,4 +335,43 @@ func (m *Manager) run(ctx context.Context, sub *subscription) {
 			appendLine(line)
 		}
 	}
+}
+
+func (m *Manager) openLogStream(ctx context.Context, payload *StartPayload) (io.ReadCloser, error) {
+	if m.backend == config.LogsBackendNodeLocal && m.nodeClient != nil {
+		pod, err := m.kube.CoreV1().Pods(payload.Namespace).Get(ctx, payload.Pod, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		node := pod.Spec.NodeName
+		if node == "" {
+			return nil, fmt.Errorf("pod %s has no nodeName", payload.Pod)
+		}
+		var since *time.Time
+		if payload.SinceSeconds != nil {
+			t := time.Now().UTC().Add(-time.Duration(*payload.SinceSeconds) * time.Second)
+			since = &t
+		}
+		return m.nodeClient.Stream(ctx, node, nodelocal.FetchRequest{
+			Namespace: payload.Namespace,
+			Pod:       payload.Pod,
+			PodUID:    string(pod.UID),
+			Container: payload.Container,
+			SinceTime: since,
+			TailLines: payload.TailLines,
+		})
+	}
+
+	opts := &corev1.PodLogOptions{
+		Container: payload.Container,
+		Follow:    payload.Follow,
+	}
+	if payload.TailLines != nil {
+		opts.TailLines = payload.TailLines
+	}
+	if payload.SinceSeconds != nil {
+		opts.SinceSeconds = payload.SinceSeconds
+	}
+	req := m.kube.CoreV1().Pods(payload.Namespace).GetLogs(payload.Pod, opts)
+	return req.Stream(ctx)
 }

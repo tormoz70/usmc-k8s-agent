@@ -11,16 +11,25 @@ import (
 const (
 	DefaultHTTPPort              = 8080
 	DefaultInternalHTTPPort      = 8081
+	DefaultLogsNodeHTTPPort      = 8083
 	DefaultRequestTopic          = "k8s.commands.request"
 	DefaultConsumerGroup         = "k8s-agent"
 	DefaultLogsCollectMaxJobs    = 20
 	DefaultLogsCollectMaxBytes   = 524288000 // 500 MiB
 	DefaultSyncWorkerConcurrency = 1
+	DefaultPodLogsRoot           = "/var/log/pods"
 
 	ComponentAll          = "all"
 	ComponentIngress      = "ingress"
 	ComponentEgress       = "egress"
 	ComponentAgentService = "agent-service"
+	ComponentLogsNode     = "logs-node"
+
+	ImplementationV1 = "v1"
+	ImplementationV2 = "v2"
+
+	LogsBackendAPI      = "api"
+	LogsBackendNodeLocal = "nodelocal"
 
 	KafkaModeJSON     = "json"
 	KafkaModeProtobuf = "protobuf"
@@ -31,11 +40,21 @@ const (
 type Config struct {
 	ClusterID string
 
-	Kafka KafkaConfig
-	S3    S3Config
-	Agent AgentConfig
-	HTTP  HTTPConfig
+	Kafka  KafkaConfig
+	S3     S3Config
+	Agent  AgentConfig
+	HTTP   HTTPConfig
 	Policy PolicyConfig
+	Logs   LogsConfig
+}
+
+// LogsConfig controls how pod logs are collected (API vs node-local DaemonSet).
+type LogsConfig struct {
+	Backend           string // api | nodelocal
+	PodLogsRoot       string
+	NodeName          string
+	NodeHTTPPort      int
+	NodeAgentSelector string
 }
 
 type KafkaConfig struct {
@@ -77,6 +96,7 @@ type S3Config struct {
 
 type AgentConfig struct {
 	Component               string
+	Implementation          string // v1 | v2
 	AgentServiceURL         string
 	InternalHTTPPort        int
 	LeaderLeaseName         string
@@ -110,7 +130,8 @@ type PolicyConfig struct {
 // Load reads configuration from environment with sensible defaults.
 func Load() (*Config, error) {
 	brokers := splitCSV(env("KAFKA_BROKERS", "localhost:9092"))
-	if len(brokers) == 0 {
+	component := env("AGENT_COMPONENT", ComponentAll)
+	if len(brokers) == 0 && component != ComponentLogsNode {
 		return nil, fmt.Errorf("KAFKA_BROKERS must not be empty")
 	}
 
@@ -185,6 +206,7 @@ func Load() (*Config, error) {
 		},
 		Agent: AgentConfig{
 			Component:               env("AGENT_COMPONENT", ComponentAll),
+			Implementation:          strings.ToLower(env("AGENT_IMPLEMENTATION", ImplementationV1)),
 			AgentServiceURL:         env("AGENT_SERVICE_URL", ""),
 			InternalHTTPPort:        internalHTTPPort,
 			LeaderLeaseName:         env("LEADER_LEASE_NAME", ""),
@@ -212,6 +234,13 @@ func Load() (*Config, error) {
 			PolicyFile:     env("POLICY_FILE", "/etc/k8s-agent/policy/policy.yaml"),
 			FeaturesFile:   env("FEATURES_FILE", "/etc/k8s-agent/policy/features.yaml"),
 		},
+		Logs: LogsConfig{
+			Backend:           strings.ToLower(env("LOGS_BACKEND", LogsBackendAPI)),
+			PodLogsRoot:       env("POD_LOGS_ROOT", DefaultPodLogsRoot),
+			NodeName:          env("NODE_NAME", ""),
+			NodeHTTPPort:      intFromEnv("LOGS_NODE_HTTP_PORT", DefaultLogsNodeHTTPPort),
+			NodeAgentSelector: env("LOGS_NODE_AGENT_SELECTOR", "app.kubernetes.io/component=logs-node-agent"),
+		},
 	}
 
 	if cfg.Agent.SyncWorkerConcurrency < 1 {
@@ -225,6 +254,29 @@ func Load() (*Config, error) {
 		}
 	default:
 		return nil, fmt.Errorf("KAFKA_MODE must be one of: json, protobuf, dual")
+	}
+
+	switch cfg.Agent.Implementation {
+	case ImplementationV1, ImplementationV2, "":
+		if cfg.Agent.Implementation == "" {
+			cfg.Agent.Implementation = ImplementationV1
+		}
+	default:
+		return nil, fmt.Errorf("AGENT_IMPLEMENTATION must be one of: v1, v2")
+	}
+
+	switch cfg.Logs.Backend {
+	case LogsBackendAPI, LogsBackendNodeLocal, "":
+		if cfg.Logs.Backend == "" {
+			cfg.Logs.Backend = LogsBackendAPI
+		}
+	default:
+		return nil, fmt.Errorf("LOGS_BACKEND must be one of: api, nodelocal")
+	}
+
+	// v2 implies nodelocal unless explicitly overridden; v1 defaults to api.
+	if cfg.Agent.Implementation == ImplementationV2 && env("LOGS_BACKEND", "") == "" {
+		cfg.Logs.Backend = LogsBackendNodeLocal
 	}
 
 	if err := cfg.validateComponent(); err != nil {
@@ -245,18 +297,28 @@ func ResolveTopic(template, clusterID string) string {
 
 func (c *Config) validateComponent() error {
 	switch c.Agent.Component {
-	case ComponentAll, ComponentIngress, ComponentEgress, ComponentAgentService:
+	case ComponentAll, ComponentIngress, ComponentEgress, ComponentAgentService, ComponentLogsNode:
 	default:
-		return fmt.Errorf("AGENT_COMPONENT must be one of: all, ingress, egress, agent-service")
+		return fmt.Errorf("AGENT_COMPONENT must be one of: all, ingress, egress, agent-service, logs-node")
 	}
 	if c.Agent.Component == ComponentIngress || c.Agent.Component == ComponentEgress {
 		if c.Agent.AgentServiceURL == "" {
 			return fmt.Errorf("AGENT_SERVICE_URL is required for component %q", c.Agent.Component)
 		}
 	}
-	if c.Agent.Component == ComponentAgentService || c.Agent.Component == ComponentEgress {
+	if c.Agent.Component == ComponentAgentService || c.Agent.Component == ComponentEgress || c.Agent.Component == ComponentLogsNode {
 		if c.HTTP.InternalBearerToken == "" {
 			return fmt.Errorf("HTTP_INTERNAL_BEARER_TOKEN is required for component %q", c.Agent.Component)
+		}
+	}
+	if c.Agent.Component == ComponentLogsNode {
+		if c.Logs.PodLogsRoot == "" {
+			return fmt.Errorf("POD_LOGS_ROOT is required for component logs-node")
+		}
+	}
+	if c.Logs.Backend == LogsBackendNodeLocal && (c.Agent.Component == ComponentAgentService || c.Agent.Component == ComponentAll) {
+		if c.Logs.NodeHTTPPort < 1 {
+			return fmt.Errorf("LOGS_NODE_HTTP_PORT must be >= 1 for nodelocal backend")
 		}
 	}
 	if c.Agent.Component == ComponentEgress && c.Kafka.TLSRequired {

@@ -23,6 +23,7 @@ type config struct {
 	ReplyTopic       string
 	FixturesDir      string
 	FeaturesDir      string
+	TargetsFile      string
 	Kubeconfig       string
 	AgentNamespace   string
 	AgentConfigMap   string
@@ -45,6 +46,7 @@ func main() {
 	replyTopic := flag.String("reply-topic", env("KAFKA_REPLY_TOPIC", mockcorelib.DefaultReplyTopic), "default reply topic")
 	fixturesDir := flag.String("fixtures", env("FIXTURES_DIR", "test/fixtures"), "command template directory")
 	featuresDir := flag.String("features-dir", env("FEATURES_DIR", "deploy/base/policy"), "agent feature preset directory")
+	targetsFile := flag.String("targets", env("MOCK_CORE_UI_TARGETS", ""), "agent v1/v2 targets YAML (empty = embedded defaults)")
 	kubeconfig := flag.String("kubeconfig", env("KUBECONFIG", ""), "kubeconfig for agent mode switching")
 	agentNamespace := flag.String("agent-namespace", env("AGENT_NAMESPACE", "uamc-agent"), "agent namespace")
 	agentConfigMap := flag.String("agent-configmap", env("AGENT_CONFIGMAP", "k8s-agent-policy"), "policy configmap name")
@@ -64,6 +66,7 @@ func main() {
 		ReplyTopic:     *replyTopic,
 		FixturesDir:    *fixturesDir,
 		FeaturesDir:    *featuresDir,
+		TargetsFile:    *targetsFile,
 		Kubeconfig:     *kubeconfig,
 		AgentNamespace: *agentNamespace,
 		AgentConfigMap: *agentConfigMap,
@@ -91,9 +94,12 @@ func main() {
 	mux.Handle("/", srv.staticHandler())
 	mux.HandleFunc("/api/templates", srv.handleTemplates)
 	mux.HandleFunc("/api/topics", srv.handleTopics)
+	mux.HandleFunc("/api/targets", srv.handleTargets)
+	mux.HandleFunc("/api/targets/select", srv.handleTargetSelect)
 	mux.HandleFunc("/api/commands", srv.handleCommands)
 	mux.HandleFunc("/api/scenarios", srv.handleScenarios)
 	mux.HandleFunc("/api/scenarios/run", srv.handleScenarioRun)
+	mux.HandleFunc("/api/scenarios/fixture", srv.handleScenarioFixture)
 	mux.HandleFunc("/api/agent/rest", srv.handleAgentRESTProbe)
 	mux.HandleFunc("/api/messages/stream", srv.handleMessageStream)
 	mux.HandleFunc("/api/messages/history", srv.handleMessageHistory)
@@ -101,6 +107,10 @@ func main() {
 	mux.HandleFunc("/api/agent/modes", srv.handleAgentModes)
 	mux.HandleFunc("/api/agent/mode", srv.handleAgentMode)
 	mux.HandleFunc("/api/cluster/inventory", srv.handleClusterInventory)
+	mux.HandleFunc("/api/resources/snapshot", srv.handleResourcesSnapshot)
+	mux.HandleFunc("/api/resources/compare", srv.handleResourcesCompare)
+	mux.HandleFunc("/api/resources/profiles", srv.handleResourcesProfiles)
+	mux.HandleFunc("/api/resources/profile", srv.handleResourcesProfile)
 	mux.HandleFunc("/api/health", srv.handleHealth)
 
 	slog.Info("mock-core-ui listening", "addr", cfg.Addr, "brokers", cfg.Brokers, "fixtures", cfg.FixturesDir)

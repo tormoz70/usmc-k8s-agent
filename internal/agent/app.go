@@ -31,6 +31,8 @@ import (
 	"github.com/usmc/usmc-k8s-agent/internal/modules/loglevel"
 	"github.com/usmc/usmc-k8s-agent/internal/modules/metricswatcher"
 	"github.com/usmc/usmc-k8s-agent/internal/modules/ottlogstrue"
+	"github.com/usmc/usmc-k8s-agent/internal/nodeagent"
+	"github.com/usmc/usmc-k8s-agent/internal/nodelocal"
 	"github.com/usmc/usmc-k8s-agent/internal/observability"
 	"github.com/usmc/usmc-k8s-agent/internal/policy"
 	"github.com/usmc/usmc-k8s-agent/internal/protodispatch"
@@ -87,6 +89,9 @@ func New(opts Options) (*App, error) {
 	log := opts.Logger
 	if log == nil {
 		log = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+	if opts.Config.Agent.Component == config.ComponentLogsNode {
+		return newLogsNodeApp(opts, log)
 	}
 	metrics := opts.Metrics
 	if metrics == nil {
@@ -166,6 +171,24 @@ func New(opts Options) (*App, error) {
 		metrics,
 		log,
 	)
+
+	podNamespace := envOrDefault("POD_NAMESPACE", "uamc-agent")
+	if opts.Config.Logs.Backend == config.LogsBackendNodeLocal {
+		nodeClient := &nodelocal.NodeClient{
+			Kube:      kube,
+			Namespace: podNamespace,
+			Selector:  opts.Config.Logs.NodeAgentSelector,
+			Port:      opts.Config.Logs.NodeHTTPPort,
+			Token:     opts.Config.HTTP.InternalBearerToken,
+		}
+		collector.WithNodeLocal(nodeClient)
+		streamMgr.WithNodeLocal(nodeClient)
+		log.Info("logs backend nodelocal enabled",
+			"implementation", opts.Config.Agent.Implementation,
+			"selector", opts.Config.Logs.NodeAgentSelector,
+			"port", opts.Config.Logs.NodeHTTPPort,
+		)
+	}
 	healthMgr := healthreport.NewManager(
 		opts.Config.ClusterID,
 		opts.Config.Kafka.HealthTopic,
@@ -263,7 +286,7 @@ func New(opts Options) (*App, error) {
 		publisher:     publisher,
 		commandGuard:  commandGuard,
 		http:          httpServer,
-		podNamespace:  envOrDefault("POD_NAMESPACE", "uamc-agent"),
+		podNamespace:  podNamespace,
 		coreClient:    coreClient,
 		protoDispatch: protoDisp,
 	}, nil
@@ -284,6 +307,8 @@ func (a *App) Run(ctx context.Context, devNoLeader bool) error {
 		return a.runEgress(ctx, devNoLeader)
 	case config.ComponentAgentService:
 		return a.runAgentService(ctx, devNoLeader)
+	case config.ComponentLogsNode:
+		return a.runLogsNode(ctx)
 	default:
 		return a.runAll(ctx, devNoLeader)
 	}
@@ -349,4 +374,61 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func newLogsNodeApp(opts Options, log *slog.Logger) (*App, error) {
+	engine := opts.Policy
+	if engine == nil {
+		var err error
+		engine, _, err = policy.LoadFromFilesWithFeatures(
+			opts.Config.Policy.PolicyFile,
+			opts.Config.Policy.NamespacesFile,
+			opts.Config.Policy.FeaturesFile,
+		)
+		if err != nil {
+			// Policy is best-effort on node agent; allow all namespaces if files missing in unit tests.
+			log.Warn("logs-node policy load failed; namespace checks disabled", "error", err)
+			engine = nil
+		}
+	}
+	state := observability.NewRuntimeState()
+	state.SetLeader(true)
+	state.SetKafkaConnected(true)
+	state.SetAPIServerOK(true)
+	return &App{
+		cfg:   opts.Config,
+		log:   log,
+		state: state,
+		policy: engine,
+		podNamespace: envOrDefault("POD_NAMESPACE", "uamc-agent"),
+	}, nil
+}
+
+func (a *App) runLogsNode(ctx context.Context) error {
+	port := a.cfg.Logs.NodeHTTPPort
+	if port < 1 {
+		port = config.DefaultLogsNodeHTTPPort
+	}
+	reader := nodelocal.NewReader(a.cfg.Logs.PodLogsRoot)
+	srv := nodeagent.NewServer(
+		fmt.Sprintf(":%d", port),
+		reader,
+		a.policy,
+		a.cfg.HTTP.InternalBearerToken,
+		a.cfg.Logs.NodeName,
+		a.log,
+	)
+	if err := srv.Start(); err != nil {
+		return err
+	}
+	a.log.Info("logs-node agent ready",
+		"implementation", a.cfg.Agent.Implementation,
+		"node", a.cfg.Logs.NodeName,
+		"root", a.cfg.Logs.PodLogsRoot,
+		"port", port,
+	)
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownGracePeriod())
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
 }

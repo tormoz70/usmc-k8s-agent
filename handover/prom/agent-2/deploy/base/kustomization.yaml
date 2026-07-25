@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: uamc-agent
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: k8s-agent-policy
+    files:
+      - policy.yaml=policy/policy.yaml
+      - namespaces.yaml=policy/namespaces.yaml
+      - features.yaml=policy/features.yaml
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrole-watch.yaml
+  - clusterrole-cluster-read.yaml
+  - uamcsa-rolebinding.yaml
+  - uamcsa-clusterrolebinding-watch.yaml
+  - deployment-ingress.yaml
+  - deployment-egress.yaml
+  - deployment-agent-service.yaml
+  - service.yaml
+  - networkpolicy.yaml

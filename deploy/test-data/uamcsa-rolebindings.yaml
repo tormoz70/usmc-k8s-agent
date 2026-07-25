@@ -1,4 +1,5 @@
-# Namespace-scoped RoleBindings: grant uamcsa (in uamc-agent) access from each test namespace.
+# Namespace-scoped RoleBindings: grant each agent SA access in test namespaces.
+# Subjects cover local + test-v1 + test-v2 ServiceAccounts.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -14,6 +15,12 @@ subjects:
   - kind: ServiceAccount
     name: uamcsa
     namespace: uamc-agent
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v1
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v2
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -30,6 +37,12 @@ subjects:
   - kind: ServiceAccount
     name: uamcsa
     namespace: uamc-agent
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v1
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v2
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -46,6 +59,12 @@ subjects:
   - kind: ServiceAccount
     name: uamcsa
     namespace: uamc-agent
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v1
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v2
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -62,6 +81,12 @@ subjects:
   - kind: ServiceAccount
     name: uamcsa
     namespace: uamc-agent
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v1
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v2
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -78,3 +103,9 @@ subjects:
   - kind: ServiceAccount
     name: uamcsa
     namespace: uamc-agent
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v1
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent-v2

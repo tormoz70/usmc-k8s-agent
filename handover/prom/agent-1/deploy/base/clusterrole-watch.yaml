@@ -1,0 +1,19 @@
+# Watch-only ClusterRole (maps to feature watch_events / k8s-agent-watch).
+# ClusterRoleBinding required for cluster-scoped kinds (Namespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-agent-watch
+  labels:
+    app.kubernetes.io/part-of: uamc-k8s-agent
+    uamc.k8s-agent/feature: watch_events
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps.openshift.io"]
+    resources: ["deploymentconfigs"]
+    verbs: ["get", "list", "watch"]

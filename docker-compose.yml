@@ -66,6 +66,8 @@ services:
       AGENT_NAMESPACE: uamc-agent
       MINIO_CONSOLE_URL: http://localhost:9011
       AGENT_HTTP_URL: http://host.docker.internal:8080
+      # Agent 1/2 targets are embedded in the binary; optional override:
+      # MOCK_CORE_UI_TARGETS: /targets/targets.yaml
       # optional: HTTP_BEARER_TOKEN if agent requires it for /v1/cache
     extra_hosts:
       - "host.docker.internal:host-gateway"

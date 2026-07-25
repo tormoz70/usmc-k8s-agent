@@ -1,0 +1,46 @@
+# REPLACE VALUES BEFORE kubectl apply -k .
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+  namespace: uamc-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: CLUSTER_ID
+              value: CHANGE-ME-CLUSTER-ID
+            - name: KAFKA_BROKERS
+              value: kafka.example.com:9093
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress
+  namespace: uamc-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          env:
+            - name: CLUSTER_ID
+              value: CHANGE-ME-CLUSTER-ID
+            - name: KAFKA_BROKERS
+              value: kafka.example.com:9093
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress
+  namespace: uamc-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          env:
+            - name: CLUSTER_ID
+              value: CHANGE-ME-CLUSTER-ID

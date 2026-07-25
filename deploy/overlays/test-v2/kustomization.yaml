@@ -1,0 +1,146 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: uamc-agent-v2
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/logs-node
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Same allow-list as local overlay — otherwise fixtures (test-namespace-1, …) get PolicyDenied.
+configMapGenerator:
+  - name: k8s-agent-policy
+    behavior: merge
+    files:
+      - namespaces.yaml=policy/namespaces.yaml
+
+secretGenerator:
+  - name: k8s-agent-internal-token
+    literals:
+      - token=local-dev-internal-token-v2
+
+patches:
+  - target:
+      kind: Namespace
+      name: uamc-agent
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: uamc-agent-v2
+  - target:
+      kind: ClusterRoleBinding
+      name: uamcsa-watch
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: uamcsa-watch-v2
+  # Do not overwrite shared uamcsa-cluster-read (local) — unique name per agent.
+  - target:
+      kind: ClusterRoleBinding
+      name: uamcsa-cluster-read
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: uamcsa-cluster-read-v2
+  - target:
+      kind: Deployment
+      name: agent-service
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-service
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: agent
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+                  - name: LOGS_BACKEND
+                    value: nodelocal
+                  - name: CLUSTER_ID
+                    value: test-v2
+                  - name: KAFKA_REQUEST_TOPIC
+                    value: k8s.commands.request.v2
+                  - name: KAFKA_CONSUMER_GROUP
+                    value: k8s-agent-v2
+                  - name: KAFKA_BROKERS
+                    value: host.docker.internal:9092
+                  - name: LOGS_NODE_HTTP_PORT
+                    value: "8083"
+                  - name: LOGS_TEMP_DIR
+                    value: /var/tmp/logs-collect
+                  - name: S3_ENDPOINT
+                    value: http://host.docker.internal:9010
+                  - name: S3_FORCE_PATH_STYLE
+                    value: "true"
+  - target:
+      kind: Deployment
+      name: egress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: egress
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+                  - name: CLUSTER_ID
+                    value: test-v2
+                  - name: KAFKA_REQUEST_TOPIC
+                    value: k8s.commands.request.v2
+                  - name: KAFKA_CONSUMER_GROUP
+                    value: k8s-agent-v2
+                  - name: KAFKA_BROKERS
+                    value: host.docker.internal:9092
+  - target:
+      kind: Deployment
+      name: ingress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ingress
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+                  - name: CLUSTER_ID
+                    value: test-v2
+  - target:
+      kind: DaemonSet
+      name: logs-node-agent
+    patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: logs-node-agent
+      spec:
+        template:
+          spec:
+            containers:
+              - name: logs-node
+                env:
+                  - name: CLUSTER_ID
+                    value: test-v2
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2

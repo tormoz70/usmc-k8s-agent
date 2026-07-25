@@ -1,0 +1,80 @@
+# Capability groups: enable/disable agent functionality.
+# Each group maps to a dedicated ClusterRole (see docs/rbac-features-capacity.md).
+# Disabled groups are rejected at policy layer and handlers are not registered.
+
+features:
+  cluster_inventory:
+    enabled: true
+    description: "Read cluster/namespace inventory via k8s.api"
+    rbac_role: k8s-agent-cluster-read
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: "", version: v1, kind: Namespace }
+      - { group: "", version: v1, kind: Pod }
+      - { group: "", version: v1, kind: Service }
+      - { group: "", version: v1, kind: ConfigMap }
+      - { group: "", version: v1, kind: Event }
+
+  workload_manage:
+    enabled: true
+    description: "Create/update/delete Deployments and DeploymentConfigs via k8s.api"
+    rbac_role: k8s-agent-workload-write
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: apps, version: v1, kind: Deployment }
+      - { group: apps.openshift.io, version: v1, kind: DeploymentConfig }
+
+  istio_manage:
+    enabled: true
+    description: "Manage Istio networking and AuthorizationPolicy via k8s.api"
+    rbac_role: k8s-agent-istio-write
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: networking.istio.io, version: v1, kind: VirtualService }
+      - { group: networking.istio.io, version: v1, kind: DestinationRule }
+      - { group: networking.istio.io, version: v1, kind: Gateway }
+      - { group: networking.istio.io, version: v1, kind: AuthorizationPolicy }
+
+  rbac_inspect:
+    enabled: true
+    description: "Read Roles and RoleBindings via k8s.api"
+    rbac_role: k8s-agent-rbac-read
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: rbac.authorization.k8s.io, version: v1, kind: Role }
+      - { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding }
+
+  logs_collect:
+    enabled: true
+    description: "Batch pod log export to S3"
+    rbac_role: k8s-agent-logs-export
+    command_types: [logs.collect]
+
+  logs_stream:
+    enabled: true
+    description: "Live pod log tail to Kafka"
+    rbac_role: k8s-agent-logs-stream
+    command_types: [logs.stream.start, logs.stream.stop]
+
+  watch_events:
+    enabled: true
+    description: "Informer watch (Namespace, Pod, Deployment, DeploymentConfig) → cluster.events"
+    rbac_role: k8s-agent-watch
+    command_types: [watch.subscribe, watch.unsubscribe]
+    allowed_gvk:
+      - { group: "", version: v1, kind: Namespace }
+      - { group: "", version: v1, kind: Pod }
+      - { group: apps, version: v1, kind: Deployment }
+      - { group: apps.openshift.io, version: v1, kind: DeploymentConfig }
+
+  health_report:
+    enabled: true
+    description: "Periodic pod status snapshots to cluster.health"
+    rbac_role: k8s-agent-health
+    command_types: [health.report.start, health.report.stop]
+
+  cache:
+    enabled: true
+    description: "In-memory cache (no apiserver RBAC)"
+    rbac_role: k8s-agent-cache
+    command_types: [cache.put, cache.delete, cache.clear]

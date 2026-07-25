@@ -54,10 +54,12 @@ func (m *Module) Start(ctx context.Context) error {
 		}
 	}
 	req := &registrationpb.AgentRegistrationRequest{
-		ClusterID:       m.cfg.ClusterID,
-		AgentInstanceID: m.cfg.Agent.InstanceID,
-		ClusterName:     m.cfg.ClusterID,
-		Modules:         m.names,
+		ClusterID:           m.cfg.ClusterID,
+		AgentInstanceID:     m.cfg.Agent.InstanceID,
+		ClusterName:         m.cfg.ClusterID,
+		Modules:             m.names,
+		AgentImplementation: m.cfg.Agent.Implementation,
+		LogsBackend:         m.cfg.Logs.Backend,
 	}
 	body, err := req.Marshal()
 	if err != nil {
@@ -71,12 +73,28 @@ func (m *Module) Start(ctx context.Context) error {
 		m.cfg.Kafka.OutRequestTopic,
 		respTopic,
 	)
-	_, _, err = m.client.SendRequest(ctx, h.ToMap(), body)
+	respBody, _, err := m.client.SendRequest(ctx, h.ToMap(), body)
 	if err != nil {
 		m.log.Warn("agent registration failed", "error", err)
 		return nil // non-fatal: core may be absent in local json mode dual
 	}
-	m.log.Info("agent registered with uamc-core", "cluster_id", m.cfg.ClusterID)
+	if len(respBody) > 0 {
+		var resp registrationpb.AgentRegistrationResponse
+		if err := resp.Unmarshal(respBody); err == nil && !resp.Accepted {
+			m.log.Warn("agent registration rejected by core",
+				"reason", resp.Reason,
+				"message", resp.Message,
+				"cluster_id", m.cfg.ClusterID,
+				"implementation", m.cfg.Agent.Implementation,
+			)
+			return nil
+		}
+	}
+	m.log.Info("agent registered with uamc-core",
+		"cluster_id", m.cfg.ClusterID,
+		"implementation", m.cfg.Agent.Implementation,
+		"logs_backend", m.cfg.Logs.Backend,
+	)
 	return nil
 }
 

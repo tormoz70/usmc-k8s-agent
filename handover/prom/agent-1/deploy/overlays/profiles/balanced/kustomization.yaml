@@ -1,0 +1,67 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Balanced resource profile: replicas=1, lower QPS/logs pool, agent mem 768Mi.
+# Apply on top of an existing agent install (same namespace as base/local/prod).
+resources:
+  - ../../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: ingress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ingress
+      spec:
+        replicas: 1
+  - target:
+      kind: Deployment
+      name: egress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: egress
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: K8S_API_QPS
+                    value: "30"
+                  - name: K8S_API_BURST
+                    value: "60"
+  - target:
+      kind: Deployment
+      name: agent-service
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-service
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: agent
+                env:
+                  - name: K8S_API_QPS
+                    value: "30"
+                  - name: K8S_API_BURST
+                    value: "60"
+                  - name: LOGS_COLLECT_MAX_JOBS
+                    value: "5"
+                  - name: LOGS_COLLECT_MAX_BYTES
+                    value: "104857600"
+                resources:
+                  limits:
+                    memory: 768Mi
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi

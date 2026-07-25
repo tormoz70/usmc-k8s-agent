@@ -3,7 +3,8 @@
 Гибридная схема для разработки и ручного E2E-тестирования **usmc-k8s-agent** (корневой модуль `cmd/agent` + `internal/`).
 
 > **Быстрый старт:** `make dev-up` — compose (Kafka, MinIO, mock-core UI) + kind-кластер с агентом + test-data.  
-> **UI:** http://localhost:8090 — вкладка **Scenarios** (UI-заглушки), Commands, Kafka Monitor, S3, **Agent Mode**.  
+> **UI:** http://localhost:8090 — вкладка **Scenarios** (UI-заглушки), Commands, Kafka Monitor, S3, **Agent Mode**, **Resources**.  
+> **Agent target:** по умолчанию **Local agent** (`k8s.commands.request` / ns `uamc-agent`). См. [§5.2.0](#520-выбор-agent-target).  
 > **Модель:** Java core — «чёрный ящик»; mock-core UI имитирует только запросы UI → агент (Kafka / S3 / REST).  
 > **E2E (7 сценариев CLI):** [§7.3](#73-e2e-сценарии-реестр-и-алгоритм-проверки).  
 > **RBAC / features:** [§4.5](#45-rbac-и-профили-features) · [`rbac-features-capacity.md`](./rbac-features-capacity.md).  
@@ -406,14 +407,17 @@ kubectl rollout status deployment/agent-service -n uamc-agent
 | **Kafka Monitor** | Live/history по топикам (`reply`, `cluster.events`, `logs.stream`, …), фильтр по correlation_id |
 | **Cluster** | Inventory namespaces/pods/deployments через kubeconfig |
 | **Agent Mode** | Профиль features Full ↔ Observability, RBAC-группы |
+| **Resources** | Snapshot CPU/RAM + `/metrics`, сравнение агентов, apply profile |
 | **S3 Check** | HEAD объекта в MinIO после `logs.collect` |
+
+В шапке UI — переключатель **Agent target** (куда уходят Kafka-команды и какой namespace смотрит Resources). См. [§5.2.0](#520-выбор-agent-target).
 
 Поток работы (рекомендуется через **Scenarios**):
 
 ```text
 Scenarios: выбрать карточку → Run
     ↓
-UI публикует в k8s.commands.request (correlation_id + reply_topic)
+UI публикует в request_topic выбранного target (correlation_id + reply_topic)
   и/или дергает AGENT_HTTP_URL (REST)
     ↓
 k8s-agent (leader) обрабатывает → reply topic / S3 / HTTP ответ
@@ -428,6 +432,26 @@ Commands: шаблон → Send command → Kafka Monitor (тот же correlati
 ```
 
 **Успешный Kafka-ответ** — JSON со `"status": "completed"`. Ошибки: `"status": "failed"` или `"rejected"` — смотрите поле `error` / `message` в теле.
+
+### 5.2.0 Выбор Agent target
+
+Конфиг целей: [`hack/mock-core-ui/targets.yaml`](../hack/mock-core-ui/targets.yaml). Подробнее про v1/v2: [`docs/agent-v1-v2.md`](./agent-v1-v2.md).
+
+| Target в UI | Когда использовать | Namespace | Request topic |
+| --- | --- | --- | --- |
+| **Local agent** (по умолчанию) | Обычный локальный контур (`make dev-up` / `deploy/overlays/local`) | `uamc-agent` | `k8s.commands.request` |
+| **Agent 1 - v1** | После `kubectl apply -k deploy/overlays/test-v1` | `uamc-agent-v1` | `k8s.commands.request.v1` |
+| **Agent 2 - v2** | После `kubectl apply -k deploy/overlays/test-v2` | `uamc-agent-v2` | `k8s.commands.request.v2` |
+
+**Важно:** сценарии и Commands ждут reply (~45 с). Если выбран Agent 1/2, а в кластере задеплоен только `uamc-agent`, UI пишет в `.v1`/`.v2` топик **без consumer** — на экране зависает «Running ui-list-pods…», затем timeout.
+
+Перед Run проверьте в шапке:
+
+1. Выбран **Local agent**, если агент в `uamc-agent`.
+2. В метаданных target видно `request_topic: k8s.commands.request`.
+3. Pod'ы агента Running: `kubectl get pods -n uamc-agent`.
+
+Для сравнения v1/v2 сначала примените оба overlay, затем переключайте target в шапке.
 
 ### 5.2.1 UI-заглушки (Scenarios)
 
@@ -847,10 +871,13 @@ bin/mock-core -listen -reply-topic core-client.dev.responses
 ```text
 1. make dev-up                    # compose + kind + agent + kafka-init + test-data
 2. kubectl get pods -n uamc-agent # 6 pod'ов Running (2× ingress, egress, agent-service)
-3. go build -o bin\mock-core.exe .\hack\mock-core
+3. mock-core-ui: Agent target = Local agent (topic k8s.commands.request)
+4. go build -o bin\mock-core.exe .\hack\mock-core
 ```
 
 `kafka-init` уже входит в `make dev-up`. Повторно вручную: `powershell -File hack\kafka-init.ps1`.
+
+Если UI зависает на «Running ui-list-pods…» — проверьте target ([§5.2.0](#520-выбор-agent-target)).
 
 Подробнее: [§14](#14-быстрый-чеклист-всё-поднять-с-нуля), [§13](#13-troubleshooting).
 
@@ -1226,9 +1253,11 @@ docker compose exec redpanda rpk topic list
 
 ### mock-core: timeout waiting for reply
 
+- **Неверный Agent target** → UI шлёт в `k8s.commands.request.v1`/`.v2`, а local-агент слушает `k8s.commands.request`. Симптом: «Running ui-list-pods…» ~45 с. Выберите **Local agent** в шапке ([§5.2.0](#520-выбор-agent-target))
 - Агент не leader → проверьте Lease и logs
 - Policy denied → проверьте `allowed_command_types` в ConfigMap `k8s-agent-policy`
 - Неверный reply topic → по умолчанию `core-client.dev.responses`
+- Kafka недоступна из kind → egress должен ходить на `host.docker.internal:9092`
 
 ### logs.collect: bucket not found
 
@@ -1363,7 +1392,9 @@ Linux / macOS — те же шаги; `hack/kafka-init.sh`, `bin/mock-core`.
 ## Ссылки
 
 - RBAC, features, sizing: [`docs/rbac-features-capacity.md`](./rbac-features-capacity.md)
+- Agent v1/v2 и targets UI: [`docs/agent-v1-v2.md`](./agent-v1-v2.md)
 - Диаграмма сервисов: [`docs/service-interaction-diagram.md`](./service-interaction-diagram.md)
 - Архитектура: [`docs/architecture-core-client-k8s-agent.md`](architecture-core-client-k8s-agent.md)
+- Deploy overlays: [`deploy/README.md`](../deploy/README.md)
 - Prod overlay (mTLS): [`deploy/overlays/prod/`](../deploy/overlays/prod/)
 - План и контракты Kafka: [`.cursor/plans/k8s_kafka_agent_bbf1d29a.plan.md`](../.cursor/plans/k8s_kafka_agent_bbf1d29a.plan.md)

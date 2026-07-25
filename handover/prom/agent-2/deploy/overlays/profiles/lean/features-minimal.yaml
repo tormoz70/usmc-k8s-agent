@@ -1,0 +1,62 @@
+# Minimal profile: read inventory + watch + health only (no writes, no logs export, no cache).
+features:
+  cluster_inventory:
+    enabled: true
+    rbac_role: k8s-agent-cluster-read
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: "", version: v1, kind: Namespace }
+      - { group: "", version: v1, kind: Pod }
+      - { group: "", version: v1, kind: Service }
+      - { group: "", version: v1, kind: Event }
+
+  workload_manage:
+    enabled: false
+    rbac_role: k8s-agent-workload-write
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: apps, version: v1, kind: Deployment }
+
+  istio_manage:
+    enabled: false
+    rbac_role: k8s-agent-istio-write
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: networking.istio.io, version: v1, kind: VirtualService }
+
+  rbac_inspect:
+    enabled: false
+    rbac_role: k8s-agent-rbac-read
+    command_types: [k8s.api]
+    allowed_gvk:
+      - { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding }
+
+  logs_collect:
+    enabled: false
+    rbac_role: k8s-agent-logs-export
+    command_types: [logs.collect]
+
+  logs_stream:
+    enabled: false
+    rbac_role: k8s-agent-logs-stream
+    command_types: [logs.stream.start, logs.stream.stop]
+
+  watch_events:
+    enabled: true
+    description: "Watch Namespace, Pod, Deployment → cluster.events"
+    rbac_role: k8s-agent-watch
+    command_types: [watch.subscribe, watch.unsubscribe]
+    allowed_gvk:
+      - { group: "", version: v1, kind: Namespace }
+      - { group: "", version: v1, kind: Pod }
+      - { group: apps, version: v1, kind: Deployment }
+
+  health_report:
+    enabled: true
+    rbac_role: k8s-agent-health
+    command_types: [health.report.start, health.report.stop]
+
+  cache:
+    enabled: false
+    rbac_role: k8s-agent-cache
+    command_types: [cache.put, cache.delete, cache.clear]

@@ -64,13 +64,13 @@ func (a *App) runAgentService(ctx context.Context, devNoLeader bool) error {
 		defer a.patchLeaderLabel(context.Background(), false)
 
 		lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
-		if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
+		if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, a.cfg.Agent.Implementation, a.cfg.Logs.Backend, true); err != nil {
 			a.log.Warn("publish agent.lifecycle failed", "error", err)
 		}
 		defer func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID); err != nil {
+			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, a.cfg.Agent.Implementation, a.cfg.Logs.Backend); err != nil {
 				a.log.Warn("publish agent.lifecycle leader lost failed", "error", err)
 			}
 		}()
@@ -178,7 +178,7 @@ func (a *App) commandLoop() func(context.Context) {
 			}
 
 			lc := lifecycle.NewPublisher(a.cfg.Kafka.LifecycleTopic, a.publisher.PublishRaw)
-			if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, true); err != nil {
+			if err := lc.PublishStarted(ctx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, a.cfg.Agent.Implementation, a.cfg.Logs.Backend, true); err != nil {
 				a.log.Warn("publish agent.lifecycle failed", "error", err)
 			}
 
@@ -189,7 +189,7 @@ func (a *App) commandLoop() func(context.Context) {
 				a.consumer = nil
 			}
 			pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID); err != nil {
+			if err := lc.PublishLeaderLost(pubCtx, a.cfg.ClusterID, a.cfg.Agent.InstanceID, a.cfg.Agent.Implementation, a.cfg.Logs.Backend); err != nil {
 				a.log.Warn("publish agent.lifecycle leader lost failed", "error", err)
 			}
 			cancel()

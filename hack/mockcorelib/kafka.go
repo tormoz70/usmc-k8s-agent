@@ -162,11 +162,15 @@ func ListenTopic(brokers []string, topic string, fn func(Message)) error {
 func ListenOnce(brokers []string, replyTopic, corrID string, timeout time.Duration, onMatch func(Message)) error {
 	r := NewReader(brokers, replyTopic)
 	defer r.Close()
+	return listenOnceWithReader(r, brokers, replyTopic, corrID, timeout, onMatch)
+}
+
+func listenOnceWithReader(r *kafkago.Reader, brokers []string, replyTopic, corrID string, timeout time.Duration, onMatch func(Message)) error {
 	deadline := time.After(timeout)
 	for {
 		select {
 		case <-deadline:
-			return fmt.Errorf("timeout waiting for reply on %s", replyTopic)
+			return fmt.Errorf("timeout waiting for reply on %s (no matching correlation_id; check agent is consuming request topic)", replyTopic)
 		default:
 		}
 		msg, err := readMessageWithTopicRetry(context.Background(), brokers, replyTopic, func(readCtx context.Context) (kafkago.Message, error) {
@@ -181,6 +185,52 @@ func ListenOnce(brokers []string, replyTopic, corrID string, timeout time.Durati
 		onMatch(FormatMessage(replyTopic, msg))
 		return nil
 	}
+}
+
+// SendAndWait publishes a command and waits for the matching reply.
+// The reply consumer is started before the publish to avoid missing a fast reply.
+func SendAndWait(ctx context.Context, brokers []string, requestTopic, replyTopic string, body []byte, timeout time.Duration) (SendResult, Message, error) {
+	if requestTopic == "" {
+		requestTopic = DefaultRequestTopic
+	}
+	if replyTopic == "" {
+		replyTopic = DefaultReplyTopic
+	}
+	if err := EnsureTopics(brokers, TopicSpec{Name: requestTopic, Partitions: 1}, TopicSpec{Name: replyTopic, Partitions: 1}); err != nil {
+		return SendResult{}, Message{}, fmt.Errorf("ensure topics: %w", err)
+	}
+	corrID := NewCorrelationID()
+	r := NewReader(brokers, replyTopic)
+	defer r.Close()
+
+	// Allow the consumer group to join before we publish.
+	time.Sleep(300 * time.Millisecond)
+
+	w := &kafkago.Writer{
+		Addr:     kafkago.TCP(brokers...),
+		Topic:    requestTopic,
+		Balancer: &kafkago.LeastBytes{},
+	}
+	defer w.Close()
+	if err := w.WriteMessages(ctx, kafkago.Message{
+		Value: body,
+		Headers: []kafkago.Header{
+			{Key: "correlation_id", Value: []byte(corrID)},
+			{Key: "reply_topic", Value: []byte(replyTopic)},
+		},
+	}); err != nil {
+		return SendResult{}, Message{}, err
+	}
+	result := SendResult{
+		CorrelationID: corrID,
+		ReplyTopic:    replyTopic,
+		RequestTopic:  requestTopic,
+	}
+	var reply Message
+	err := listenOnceWithReader(r, brokers, replyTopic, corrID, timeout, func(m Message) {
+		reply = m
+	})
+	return result, reply, err
 }
 
 // StreamMessages reads from a topic until ctx is cancelled, sending matching messages to out.

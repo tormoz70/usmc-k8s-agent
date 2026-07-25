@@ -222,30 +222,75 @@ func (s *server) handleScenarios(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"scenarios":       s.scenarios(),
-		"agent_http_url":  s.cfg.AgentHTTPURL,
-		"request_topic":   s.cfg.RequestTopic,
-		"reply_topic":     s.cfg.ReplyTopic,
+		"scenarios":        s.scenarios(),
+		"agent_http_url":   s.cfg.AgentHTTPURL,
+		"request_topic":    s.currentRequestTopic(),
+		"reply_topic":      s.currentReplyTopic(),
 		"core_is_blackbox": true,
-		"note":            "Stubs simulate UI/core requests; only k8s-agent Kafka/S3/REST are exercised",
+		"note":             "Stubs simulate UI/core requests; only k8s-agent Kafka/S3/REST are exercised",
+	})
+}
+
+func (s *server) handleScenarioFixture(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("id is required"))
+		return
+	}
+	sc, err := s.scenarioByID(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if sc.Fixture == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("scenario %q has no editable Kafka fixture (channel=%s)", id, sc.Channel))
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(s.cfg.FixturesDir, sc.Fixture))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !json.Valid(data) {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("fixture is not valid JSON"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":      sc.ID,
+		"fixture": sc.Fixture,
+		"body":    json.RawMessage(data),
 	})
 }
 
 type runScenarioRequest struct {
-	ID         string `json:"id"`
-	ReplyTopic string `json:"reply_topic,omitempty"`
+	ID         string          `json:"id"`
+	ReplyTopic string          `json:"reply_topic,omitempty"`
+	Body       json.RawMessage `json:"body,omitempty"` // optional override of fixture JSON
+}
+
+type timingInfo struct {
+	SentAt       time.Time `json:"sent_at"`
+	ReceivedAt   time.Time `json:"received_at,omitempty"`
+	DurationMs   int64     `json:"duration_ms"`
+	TimedOut     bool      `json:"timed_out,omitempty"`
 }
 
 type runScenarioResponse struct {
-	ScenarioID    string          `json:"scenario_id"`
-	Channel       string          `json:"channel"`
-	CorrelationID string          `json:"correlation_id,omitempty"`
-	ReplyTopic    string          `json:"reply_topic,omitempty"`
-	WatchTopic    string          `json:"watch_topic,omitempty"`
-	KafkaResult   json.RawMessage `json:"kafka_result,omitempty"`
+	ScenarioID    string           `json:"scenario_id"`
+	Channel       string           `json:"channel"`
+	CorrelationID string           `json:"correlation_id,omitempty"`
+	ReplyTopic    string           `json:"reply_topic,omitempty"`
+	WatchTopic    string           `json:"watch_topic,omitempty"`
+	KafkaResult   json.RawMessage  `json:"kafka_result,omitempty"`
 	REST          *restProbeResult `json:"rest,omitempty"`
-	S3            *s3ObjectInfo   `json:"s3,omitempty"`
-	Hints         []string        `json:"hints,omitempty"`
+	S3            *s3ObjectInfo    `json:"s3,omitempty"`
+	Hints         []string         `json:"hints,omitempty"`
+	Timing        *timingInfo      `json:"timing,omitempty"`
+	TargetID      string           `json:"target_id,omitempty"`
 }
 
 func (s *server) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
@@ -267,11 +312,18 @@ func (s *server) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	started := time.Now().UTC()
 	out := &runScenarioResponse{
 		ScenarioID: sc.ID,
 		Channel:    sc.Channel,
 		WatchTopic: sc.WatchTopic,
 		Hints:      []string{},
+		Timing: &timingInfo{
+			SentAt: started,
+		},
+	}
+	if t, err := s.targets.Current(); err == nil {
+		out.TargetID = t.ID
 	}
 
 	switch sc.Channel {
@@ -282,13 +334,16 @@ func (s *server) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.REST = rest
+		finished := time.Now().UTC()
+		out.Timing.ReceivedAt = finished
+		out.Timing.DurationMs = finished.Sub(started).Milliseconds()
 	case "kafka":
-		if err := s.runKafkaScenario(ctx, sc, req.ReplyTopic, out); err != nil {
+		if err := s.runKafkaScenario(ctx, sc, req.ReplyTopic, req.Body, out); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}
 	case "flow":
-		if err := s.runKafkaScenario(ctx, sc, req.ReplyTopic, out); err != nil {
+		if err := s.runKafkaScenario(ctx, sc, req.ReplyTopic, req.Body, out); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}
@@ -333,24 +388,52 @@ func (s *server) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *server) runKafkaScenario(ctx context.Context, sc *Scenario, replyTopic string, out *runScenarioResponse) error {
-	body, err := os.ReadFile(filepath.Join(s.cfg.FixturesDir, sc.Fixture))
-	if err != nil {
-		return fmt.Errorf("fixture %s: %w", sc.Fixture, err)
+func (s *server) runKafkaScenario(ctx context.Context, sc *Scenario, replyTopic string, bodyOverride json.RawMessage, out *runScenarioResponse) error {
+	var body []byte
+	var err error
+	if len(bodyOverride) > 0 {
+		if !json.Valid(bodyOverride) {
+			return fmt.Errorf("body override must be valid JSON")
+		}
+		body = bodyOverride
+	} else {
+		body, err = os.ReadFile(filepath.Join(s.cfg.FixturesDir, sc.Fixture))
+		if err != nil {
+			return fmt.Errorf("fixture %s: %w", sc.Fixture, err)
+		}
 	}
 	if replyTopic == "" {
-		replyTopic = s.cfg.ReplyTopic
+		replyTopic = s.currentReplyTopic()
 	}
-	result, err := mockcorelib.SendCommand(ctx, s.cfg.Brokers, s.cfg.RequestTopic, replyTopic, body)
-	if err != nil {
+	sentAt := time.Now().UTC()
+	if out.Timing != nil {
+		out.Timing.SentAt = sentAt
+	}
+	requestTopic := s.currentRequestTopic()
+	result, reply, err := mockcorelib.SendAndWait(ctx, s.cfg.Brokers, requestTopic, replyTopic, body, 45*time.Second)
+	receivedAt := time.Now().UTC()
+	if out.Timing != nil {
+		out.Timing.ReceivedAt = receivedAt
+		out.Timing.DurationMs = receivedAt.Sub(sentAt).Milliseconds()
+		if err != nil {
+			out.Timing.TimedOut = true
+		}
+	}
+	if result.CorrelationID != "" {
+		out.ReplyTopic = replyTopic
+		out.CorrelationID = result.CorrelationID
+	}
+	if err != nil && result.CorrelationID == "" {
 		return err
 	}
-	out.ReplyTopic = replyTopic
-	out.CorrelationID = result.CorrelationID
 
 	var requestBody any
 	if json.Unmarshal(body, &requestBody) != nil {
 		requestBody = string(body)
+	}
+	fixtureLabel := sc.Fixture
+	if len(bodyOverride) > 0 {
+		fixtureLabel = sc.Fixture + " (edited)"
 	}
 	payload := map[string]any{
 		"correlation_id": result.CorrelationID,
@@ -358,18 +441,14 @@ func (s *server) runKafkaScenario(ctx context.Context, sc *Scenario, replyTopic 
 		"request_topic":  result.RequestTopic,
 		"request": map[string]any{
 			"topic":   result.RequestTopic,
-			"fixture": sc.Fixture,
+			"fixture": fixtureLabel,
 			"body":    requestBody,
 		},
 	}
-
-	var reply mockcorelib.Message
-	err = mockcorelib.ListenOnce(s.cfg.Brokers, replyTopic, result.CorrelationID, 45*time.Second, func(m mockcorelib.Message) {
-		reply = m
-	})
 	if err != nil {
 		payload["wait_error"] = err.Error()
 		out.Hints = append(out.Hints, "reply timeout: "+err.Error())
+		out.Hints = append(out.Hints, "sent to "+requestTopic+"; select a target whose agent is running and consuming that topic (Local agent uses k8s.commands.request)")
 	} else {
 		var replyBody any
 		if json.Unmarshal(reply.Body, &replyBody) == nil {
@@ -390,6 +469,9 @@ func (s *server) runKafkaScenario(ctx context.Context, sc *Scenario, replyTopic 
 			payload["body"] = json.RawMessage(reply.Body)
 		}
 	}
+	if out.Timing != nil {
+		payload["timing"] = out.Timing
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -407,16 +489,55 @@ type restProbeResult struct {
 }
 
 func (s *server) probeAgentREST(ctx context.Context, method, path string) (*restProbeResult, error) {
-	base := strings.TrimRight(s.cfg.AgentHTTPURL, "/")
-	if base == "" {
-		return nil, fmt.Errorf("AGENT_HTTP_URL is not set (example: http://host.docker.internal:8080)")
-	}
 	if method == "" {
 		method = http.MethodGet
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	proxyPath := strings.TrimPrefix(path, "/")
+
+	ns := s.cfg.AgentNamespace
+	if t, err := s.targets.Current(); err == nil && t.AgentNamespace != "" {
+		ns = t.AgentNamespace
+	}
+
+	// Prefer kube Service proxy (no port-forward). ProxyGet is GET-only.
+	if method == http.MethodGet && s.modes != nil && s.modes.k8s != nil && ns != "" {
+		raw, err := s.modes.k8s.CoreV1().Services(ns).ProxyGet("http", "k8s-agent-http", "http", proxyPath, nil).DoRaw(ctx)
+		if err == nil {
+			body := string(raw)
+			truncated := len(raw) >= 64<<10
+			if truncated {
+				body = body[:64<<10]
+			}
+			return &restProbeResult{
+				URL:        fmt.Sprintf("kube-proxy://%s/services/k8s-agent-http%s", ns, path),
+				Method:     method,
+				StatusCode: http.StatusOK,
+				Body:       body,
+				Truncated:  truncated,
+			}, nil
+		}
+		// fall through to AGENT_HTTP_URL; keep err for combined message on failure
+		if base := strings.TrimRight(s.cfg.AgentHTTPURL, "/"); base != "" {
+			out, httpErr := s.probeAgentRESTDirect(ctx, method, base, path)
+			if httpErr == nil {
+				return out, nil
+			}
+			return nil, fmt.Errorf("%v; kube proxy: %v — agent HTTP is ClusterIP; run: powershell -File hack/port-forward-agent-http.ps1 -Namespace %s", httpErr, err, ns)
+		}
+		return nil, fmt.Errorf("kube proxy %s%s: %w", ns, path, err)
+	}
+
+	base := strings.TrimRight(s.cfg.AgentHTTPURL, "/")
+	if base == "" {
+		return nil, fmt.Errorf("AGENT_HTTP_URL is not set and kube proxy unavailable (example: http://host.docker.internal:8080)")
+	}
+	return s.probeAgentRESTDirect(ctx, method, base, path)
+}
+
+func (s *server) probeAgentRESTDirect(ctx context.Context, method, base, path string) (*restProbeResult, error) {
 	url := base + path
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {

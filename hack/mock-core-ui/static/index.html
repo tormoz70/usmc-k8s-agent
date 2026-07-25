@@ -557,12 +557,156 @@
       letter-spacing: 0.04em;
     }
     .scenario-card button { align-self: flex-start; }
+    .scenario-card .card-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 0.25rem;
+    }
+    .target-bar {
+      margin-top: 0.75rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .agent-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .agent-toggle button {
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 0.45rem 0.9rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .agent-toggle button + button {
+      border-left: 1px solid var(--border);
+    }
+    .agent-toggle button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .timing-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+      font-size: 0.75rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .timing-chip.warn {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+    }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(720px, 100%);
+      max-height: min(90vh, 800px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.9rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-header h3 { margin: 0; font-size: 1rem; }
+    .modal-body {
+      padding: 1rem;
+      overflow: auto;
+      flex: 1;
+    }
+    .modal-body textarea {
+      min-height: 360px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+    }
+    .modal-footer {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      padding: 0.75rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .modal-error {
+      color: var(--error);
+      font-size: 0.8rem;
+      margin-top: 0.5rem;
+      min-height: 1.2em;
+    }
+    .res-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .res-table th, .res-table td {
+      text-align: left;
+      padding: 0.4rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+      font-variant-numeric: tabular-nums;
+    }
+    .res-table th { color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .res-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+    .res-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+    }
+    .res-card .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; }
+    .res-card .value { font-size: 1.1rem; font-weight: 600; margin-top: 0.25rem; font-variant-numeric: tabular-nums; }
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 900px) { .compare-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <h1>mock-core UI</h1>
     <p>Black-box core simulator — UI stubs → k8s-agent (Kafka / S3 / REST)</p>
+    <div class="target-bar">
+      <span style="font-size:0.875rem;color:var(--muted);">Agent</span>
+      <div class="agent-toggle" id="agent-toggle" role="group" aria-label="Select agent"></div>
+      <span id="agent-target-meta" style="font-size:0.8rem;color:var(--muted);"></span>
+    </div>
   </header>
 
   <nav class="tabs">
@@ -570,6 +714,7 @@
     <button class="tab" data-tab="commands">Commands</button>
     <button class="tab" data-tab="kafka">Kafka Monitor</button>
     <button class="tab" data-tab="cluster">Cluster</button>
+    <button class="tab" data-tab="resources">Resources</button>
     <button class="tab" data-tab="agent-mode">Agent Mode</button>
     <button class="tab" data-tab="s3">S3 Check</button>
   </nav>
@@ -682,6 +827,55 @@
       </div>
     </section>
 
+    <section id="panel-resources" class="panel">
+      <div class="mode-banner">
+        <strong>Agent resources</strong>
+        <p style="margin:0.5rem 0 0;color:var(--muted);font-size:0.875rem;">
+          Snapshot CPU/RAM (metrics-server) + runtime <code>/metrics</code> for the selected agent namespace
+          (via kube Service proxy; port-forward not required for Resources).
+          Apply ha / balanced / lean profiles (needs kubeconfig). See docs/rbac-features-capacity.md.
+        </p>
+      </div>
+      <div class="actions" style="margin-top:0.75rem;">
+        <button class="primary" id="res-refresh-btn">Refresh snapshot</button>
+        <button class="secondary" id="res-compare-btn">Compare Agent 1 vs 2</button>
+        <span class="status" id="res-status"></span>
+      </div>
+      <div class="res-cards" id="res-totals"></div>
+      <div id="res-warnings" style="margin-bottom:0.75rem;"></div>
+      <div style="overflow:auto;">
+        <table class="res-table" id="res-pods-table">
+          <thead>
+            <tr>
+              <th>Pod</th><th>Component</th><th>CPU use</th><th>Mem use</th><th>CPU req</th><th>Mem req</th><th>Phase</th>
+            </tr>
+          </thead>
+          <tbody id="res-pods-body">
+            <tr><td colspan="7" style="color:var(--muted);">Click Refresh snapshot</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3 style="margin-top:1.5rem;font-size:0.95rem;">Runtime /metrics</h3>
+      <pre id="res-agent-metrics" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8rem;overflow:auto;">—</pre>
+
+      <h3 style="margin-top:1.5rem;font-size:0.95rem;">Savings profile</h3>
+      <div class="row">
+        <div>
+          <label for="res-profile">Profile</label>
+          <select id="res-profile"></select>
+        </div>
+        <div>
+          <label>Preview</label>
+          <div id="res-profile-preview" style="font-size:0.8rem;color:var(--muted);padding-top:0.5rem;">—</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="res-apply-btn">Apply profile</button>
+        <span class="status" id="res-apply-status"></span>
+      </div>
+      <div id="res-compare" class="compare-grid" style="margin-top:1.5rem;display:none;"></div>
+    </section>
+
     <section id="panel-agent-mode" class="panel">
       <div id="mode-banner" class="mode-banner">
         <strong>Current mode:</strong> <span id="current-mode-name">—</span>
@@ -727,6 +921,25 @@
     </section>
   </main>
 
+  <div class="modal-backdrop" id="scenario-edit-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scenario-edit-title">
+      <div class="modal-header">
+        <h3 id="scenario-edit-title">Change request</h3>
+        <button type="button" class="secondary" id="scenario-edit-close">Close</button>
+      </div>
+      <div class="modal-body">
+        <label for="scenario-edit-body">Request JSON</label>
+        <textarea id="scenario-edit-body" spellcheck="false"></textarea>
+        <div class="modal-error" id="scenario-edit-error"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="secondary" id="scenario-edit-reset">Reset to fixture</button>
+        <button type="button" class="secondary" id="scenario-edit-cancel">Cancel</button>
+        <button type="button" class="primary" id="scenario-edit-run">Save &amp; Run</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const tabs = document.querySelectorAll('.tab');
     const panels = document.querySelectorAll('.panel');
@@ -741,6 +954,9 @@
         }
         if (tab.dataset.tab === 'cluster') {
           loadClusterInventory().catch(err => console.error(err));
+        }
+        if (tab.dataset.tab === 'resources') {
+          loadResourceProfiles().then(() => loadResourcesSnapshot()).catch(err => console.error(err));
         }
         if (tab.dataset.tab === 'scenarios') {
           loadScenarios().catch(err => console.error(err));
@@ -761,6 +977,73 @@
     let livePaused = false;
     let messageSeq = 0;
     const MAX_BUFFERED = 300;
+
+    async function loadTargets() {
+      const res = await fetch('/api/targets');
+      if (!res.ok) throw new Error('targets: ' + res.status);
+      const data = await res.json();
+      const toggle = document.getElementById('agent-toggle');
+      const meta = document.getElementById('agent-target-meta');
+      const list = data.targets || [];
+      toggle.innerHTML = '';
+      if (list.length === 0) {
+        meta.textContent = 'no agent targets configured';
+        meta.style.color = 'var(--error)';
+        return;
+      }
+      list.forEach((t, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        if (t.button_label) {
+          btn.textContent = t.button_label;
+        } else {
+          const n = t.implementation === 'v2' ? '2' : (t.implementation === 'v1' ? '1' : String(idx + 1));
+          btn.textContent = `Agent ${n}`;
+        }
+        btn.title = t.hint || t.label || t.id;
+        btn.dataset.id = t.id;
+        if (t.id === data.selected_id) btn.classList.add('active');
+        btn.addEventListener('click', () => selectAgent(t.id));
+        toggle.appendChild(btn);
+      });
+      renderTargetMeta(data.selected || list[0]);
+    }
+
+    function renderTargetMeta(cur) {
+      const meta = document.getElementById('agent-target-meta');
+      if (!cur || !cur.request_topic) {
+        meta.textContent = '';
+        return;
+      }
+      meta.style.color = '';
+      meta.textContent = `${cur.label || cur.id} · ${cur.request_topic} · ns ${cur.agent_namespace || ''}`;
+    }
+
+    async function selectAgent(id) {
+      const meta = document.getElementById('agent-target-meta');
+      meta.textContent = 'switching…';
+      try {
+        const r = await fetch('/api/targets/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        // Optimistic active state
+        document.querySelectorAll('#agent-toggle button').forEach(b => {
+          b.classList.toggle('active', b.dataset.id === id);
+        });
+        renderTargetMeta(data.selected || {});
+        await loadTargets();
+        await loadConfig();
+        await loadScenarios().catch(() => {});
+      } catch (e) {
+        meta.textContent = 'switch failed: ' + e.message;
+        meta.style.color = 'var(--error)';
+        console.error('selectAgent', e);
+      }
+    }
 
     async function loadConfig() {
       const [tplRes, topRes] = await Promise.all([
@@ -1067,6 +1350,7 @@
         return;
       }
       setStatus(statusEl, 'Sending…', 'waiting');
+      const t0 = performance.now();
       try {
         const res = await fetch('/api/commands', {
           method: 'POST',
@@ -1078,11 +1362,18 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
-        setStatus(statusEl, `Sent ${data.correlation_id}`, 'ok');
+        const ms = data.timing && data.timing.duration_ms != null
+          ? data.timing.duration_ms
+          : Math.round(performance.now() - t0);
+        const timeout = data.timing && data.timing.timed_out;
+        setStatus(
+          statusEl,
+          `${timeout ? 'Timeout' : 'OK'} ${data.correlation_id} · ${ms} ms`,
+          timeout ? 'err' : 'ok'
+        );
         document.getElementById('correlation-id').value = data.correlation_id;
         selectOnlyTopic(data.reply_topic);
         switchTab('kafka');
-        // Start live first, then pull recent history so fast replies are not missed.
         startLive([data.reply_topic]);
         await loadHistory([data.reply_topic], data.correlation_id);
       } catch (e) {
@@ -1142,7 +1433,7 @@
       }
     });
 
-    loadConfig().catch(err => console.error(err));
+    loadTargets().then(() => loadConfig()).catch(err => console.error(err));
 
     let agentModes = [];
 
@@ -1439,8 +1730,8 @@
     function markActiveScenario(id) {
       lastScenarioId = id || '';
       document.querySelectorAll('.scenario-card').forEach(card => {
-        const btn = card.querySelector('button[data-scenario]');
-        card.classList.toggle('active-run', !!(btn && btn.dataset.scenario === lastScenarioId));
+        const btn = card.querySelector('button[data-scenario-run]');
+        card.classList.toggle('active-run', !!(btn && btn.dataset.scenarioRun === lastScenarioId));
       });
     }
 
@@ -1616,11 +1907,25 @@
         </div>`);
       }
 
+      if (data.timing) {
+        const chipClass = data.timing.timed_out ? 'timing-chip warn' : 'timing-chip';
+        const sent = data.timing.sent_at ? new Date(data.timing.sent_at).toISOString() : '—';
+        const recv = data.timing.received_at ? new Date(data.timing.received_at).toISOString() : '—';
+        parts.unshift(`<div class="${chipClass}" style="margin-bottom:0.75rem;">
+          RTT <strong>${escapeHtml(String(data.timing.duration_ms ?? '—'))} ms</strong>
+          · sent ${escapeHtml(sent)}
+          · received ${escapeHtml(recv)}
+          ${data.timing.timed_out ? ' · <strong>timeout</strong>' : ''}
+        </div>`);
+      }
+
       box.innerHTML = parts.join('');
       setScenarioResultMeta([
         data.scenario_id,
         data.channel,
+        data.target_id || '',
         outcome.status,
+        data.timing && data.timing.duration_ms != null ? `${data.timing.duration_ms} ms` : '',
         data.correlation_id ? `corr=${data.correlation_id}` : '',
       ].filter(Boolean).join(' · '));
 
@@ -1664,12 +1969,20 @@
         byGroup[group].forEach(sc => {
           const card = document.createElement('div');
           card.className = 'scenario-card' + (sc.id === lastScenarioId ? ' active-run' : '');
+          const canEdit = !!sc.fixture;
           card.innerHTML = `
             <div class="channel">${escapeHtml(sc.channel)}</div>
             <h3>${escapeHtml(sc.title)}</h3>
             <p>${escapeHtml(sc.description)}</p>
-            <button class="primary" data-scenario="${escapeHtml(sc.id)}">Run</button>`;
-          card.querySelector('button').addEventListener('click', () => runScenario(sc.id));
+            <div class="card-actions">
+              <button class="primary" data-scenario-run="${escapeHtml(sc.id)}">Run</button>
+              ${canEdit ? `<button class="secondary" data-scenario-change="${escapeHtml(sc.id)}">Change</button>` : ''}
+            </div>`;
+          card.querySelector('[data-scenario-run]').addEventListener('click', () => runScenario(sc.id));
+          const changeBtn = card.querySelector('[data-scenario-change]');
+          if (changeBtn) {
+            changeBtn.addEventListener('click', () => openScenarioEditor(sc.id));
+          }
           grid.appendChild(card);
         });
         section.appendChild(grid);
@@ -1677,7 +1990,70 @@
       });
     }
 
-    async function runScenario(id) {
+    let editScenarioId = null;
+    let editFixtureOriginal = '';
+
+    function closeScenarioEditor() {
+      const modal = document.getElementById('scenario-edit-modal');
+      modal.classList.remove('open');
+      modal.setAttribute('aria-hidden', 'true');
+      editScenarioId = null;
+      document.getElementById('scenario-edit-error').textContent = '';
+    }
+
+    async function openScenarioEditor(id) {
+      const statusEl = document.getElementById('scenarios-status');
+      const errEl = document.getElementById('scenario-edit-error');
+      errEl.textContent = '';
+      setStatus(statusEl, 'Loading fixture…', 'waiting');
+      try {
+        const res = await fetch('/api/scenarios/fixture?id=' + encodeURIComponent(id));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        editScenarioId = id;
+        const pretty = JSON.stringify(data.body, null, 2);
+        editFixtureOriginal = pretty;
+        document.getElementById('scenario-edit-body').value = pretty;
+        document.getElementById('scenario-edit-title').textContent = 'Change request — ' + id;
+        const modal = document.getElementById('scenario-edit-modal');
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        setStatus(statusEl, '', '');
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    }
+
+    document.getElementById('scenario-edit-close').addEventListener('click', closeScenarioEditor);
+    document.getElementById('scenario-edit-cancel').addEventListener('click', closeScenarioEditor);
+    document.getElementById('scenario-edit-reset').addEventListener('click', () => {
+      document.getElementById('scenario-edit-body').value = editFixtureOriginal;
+      document.getElementById('scenario-edit-error').textContent = '';
+    });
+    document.getElementById('scenario-edit-modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeScenarioEditor();
+    });
+    document.getElementById('scenario-edit-run').addEventListener('click', async () => {
+      const errEl = document.getElementById('scenario-edit-error');
+      errEl.textContent = '';
+      let body;
+      try {
+        body = JSON.parse(document.getElementById('scenario-edit-body').value);
+      } catch (e) {
+        errEl.textContent = 'Invalid JSON: ' + e.message;
+        return;
+      }
+      const id = editScenarioId;
+      closeScenarioEditor();
+      await runScenario(id, body);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.getElementById('scenario-edit-modal').classList.contains('open')) {
+        closeScenarioEditor();
+      }
+    });
+
+    async function runScenario(id, bodyOverride) {
       const statusEl = document.getElementById('scenarios-status');
       const box = document.getElementById('scenario-result');
       markActiveScenario(id);
@@ -1685,10 +2061,12 @@
       setScenarioResultMeta('Running…');
       box.innerHTML = '<div class="empty">Waiting for agent…</div>';
       try {
+        const payload = { id };
+        if (bodyOverride != null) payload.body = bodyOverride;
         const res = await fetch('/api/scenarios/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
@@ -1697,8 +2075,6 @@
 
         if (data.watch_topic) {
           selectOnlyTopic(data.watch_topic);
-          // Stream topics (cluster.events / logs.stream) are keyed by subscription_id in the body,
-          // not by the command correlation_id. Clearing the filter avoids an empty Kafka Monitor.
           if (isStreamWatchTopic(data.watch_topic)) {
             document.getElementById('correlation-id').value = '';
             startLive([data.watch_topic]);
@@ -1710,7 +2086,8 @@
           document.getElementById('s3-bucket').value = data.s3.bucket;
           document.getElementById('s3-key').value = data.s3.key || '';
         }
-        setStatus(statusEl, 'OK', 'ok');
+        const ms = data.timing && data.timing.duration_ms != null ? ` · ${data.timing.duration_ms} ms` : '';
+        setStatus(statusEl, 'OK' + ms, data.timing && data.timing.timed_out ? 'err' : 'ok');
       } catch (e) {
         stopScenarioLive();
         box.innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`;
@@ -1721,6 +2098,173 @@
 
     document.getElementById('scenarios-refresh-btn').addEventListener('click', () => {
       loadScenarios().catch(e => setStatus(document.getElementById('scenarios-status'), e.message, 'err'));
+    });
+
+    let resourceProfilesCache = [];
+
+    function fmtMilli(m) {
+      if (m == null || m === 0) return '—';
+      if (m >= 1000) return (m / 1000).toFixed(2) + ' cores';
+      return m + 'm';
+    }
+    function fmtBytes(b) {
+      if (b == null || b === 0) return '—';
+      if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(2) + ' Gi';
+      if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' Mi';
+      if (b >= 1024) return (b / 1024).toFixed(0) + ' Ki';
+      return b + ' B';
+    }
+
+    function renderSnapshotInto(snap, totalsEl, warningsEl, tbody, metricsPre) {
+      const t = snap.totals || {};
+      totalsEl.innerHTML = `
+        <div class="res-card"><div class="label">Pods</div><div class="value">${t.pod_count || 0}</div></div>
+        <div class="res-card"><div class="label">CPU use</div><div class="value">${fmtMilli(t.cpu_usage_milli)}</div></div>
+        <div class="res-card"><div class="label">Mem use</div><div class="value">${fmtBytes(t.mem_usage_bytes)}</div></div>
+        <div class="res-card"><div class="label">CPU requests</div><div class="value">${fmtMilli(t.cpu_request_milli)}</div></div>
+        <div class="res-card"><div class="label">Mem requests</div><div class="value">${fmtBytes(t.mem_request_bytes)}</div></div>
+      `;
+      const warns = [];
+      if (snap.k8s_error) warns.push('K8s: ' + snap.k8s_error);
+      if (snap.metrics_error) warns.push('metrics-server: ' + snap.metrics_error);
+      if (snap.agent_metrics && snap.agent_metrics.error) warns.push('/metrics: ' + snap.agent_metrics.error);
+      warningsEl.innerHTML = warns.map(w => `<div class="status err">${escapeHtml(w)}</div>`).join('');
+      const rows = snap.pods || [];
+      tbody.innerHTML = rows.length ? rows.map(p => `<tr>
+        <td>${escapeHtml(p.name)}</td>
+        <td>${escapeHtml(p.component || '—')} <span style="color:var(--muted);font-size:0.7rem;">${escapeHtml(p.kind || '')}</span></td>
+        <td>${fmtMilli(p.cpu_usage_milli)}</td>
+        <td>${fmtBytes(p.mem_usage_bytes)}</td>
+        <td>${fmtMilli(p.cpu_request_milli)}</td>
+        <td>${fmtBytes(p.mem_request_bytes)}</td>
+        <td>${escapeHtml(p.phase || '')}</td>
+      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--muted);">No agent pods in namespace</td></tr>';
+      const m = snap.agent_metrics || {};
+      metricsPre.textContent = JSON.stringify({
+        namespace: snap.namespace,
+        target_id: snap.target_id,
+        observed_at: snap.observed_at,
+        process_rss: fmtBytes(m.process_rss_bytes),
+        go_alloc: fmtBytes(m.go_alloc_bytes),
+        goroutines: m.go_goroutines,
+        logs_collect_jobs_active: m.logs_collect_jobs_active,
+        watch_subscriptions_active: m.watch_subscriptions_active,
+        log_streams_active: m.log_streams_active,
+        health_reports_active: m.health_reports_active,
+        cache_entries: m.cache_entries,
+      }, null, 2);
+    }
+
+    async function loadResourceProfiles() {
+      const res = await fetch('/api/resources/profiles');
+      const data = await res.json();
+      resourceProfilesCache = data.profiles || [];
+      const sel = document.getElementById('res-profile');
+      sel.innerHTML = '';
+      resourceProfilesCache.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = `${p.name} — ${p.id}`;
+        sel.appendChild(opt);
+      });
+      updateProfilePreview();
+    }
+
+    function updateProfilePreview() {
+      const id = document.getElementById('res-profile').value;
+      const p = resourceProfilesCache.find(x => x.id === id);
+      const el = document.getElementById('res-profile-preview');
+      if (!p) { el.textContent = '—'; return; }
+      el.textContent = `${p.description} · replicas=${p.replicas} · features=${p.features_mode || '—'} · mem=${p.agent_mem_limit || '—'} · emptyDir=${p.empty_dir_limit || '—'}`;
+    }
+
+    async function loadResourcesSnapshot() {
+      const statusEl = document.getElementById('res-status');
+      setStatus(statusEl, 'Loading…', 'waiting');
+      try {
+        const res = await fetch('/api/resources/snapshot');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        renderSnapshotInto(
+          data,
+          document.getElementById('res-totals'),
+          document.getElementById('res-warnings'),
+          document.getElementById('res-pods-body'),
+          document.getElementById('res-agent-metrics')
+        );
+        setStatus(statusEl, `OK · ${data.namespace || ''} · ${data.observed_at || ''}`, 'ok');
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    }
+
+    async function compareResources() {
+      const statusEl = document.getElementById('res-status');
+      const box = document.getElementById('res-compare');
+      setStatus(statusEl, 'Comparing…', 'waiting');
+      box.style.display = 'grid';
+      try {
+        const res = await fetch('/api/resources/compare');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        box.innerHTML = (data.sides || []).map((side, i) => {
+          const id = 'cmp-' + i;
+          return `<div>
+            <h3 style="font-size:0.9rem;margin:0 0 0.5rem;">${escapeHtml(side.target.label || side.target.id)}</h3>
+            <div class="res-cards" id="${id}-totals"></div>
+            <div id="${id}-warn"></div>
+            <table class="res-table"><thead><tr><th>Pod</th><th>CPU</th><th>Mem</th><th>Req CPU</th><th>Req Mem</th></tr></thead>
+            <tbody id="${id}-body"></tbody></table>
+            <pre id="${id}-metrics" style="font-size:0.7rem;max-height:160px;overflow:auto;background:var(--bg);padding:0.5rem;border-radius:0.375rem;"></pre>
+          </div>`;
+        }).join('');
+        (data.sides || []).forEach((side, i) => {
+          const id = 'cmp-' + i;
+          // lightweight row render
+          const t = side.snapshot.totals || {};
+          document.getElementById(id + '-totals').innerHTML = `
+            <div class="res-card"><div class="label">CPU use</div><div class="value">${fmtMilli(t.cpu_usage_milli)}</div></div>
+            <div class="res-card"><div class="label">Mem use</div><div class="value">${fmtBytes(t.mem_usage_bytes)}</div></div>
+            <div class="res-card"><div class="label">CPU req</div><div class="value">${fmtMilli(t.cpu_request_milli)}</div></div>
+            <div class="res-card"><div class="label">Mem req</div><div class="value">${fmtBytes(t.mem_request_bytes)}</div></div>`;
+          const warns = [];
+          if (side.snapshot.metrics_error) warns.push(side.snapshot.metrics_error);
+          if (side.snapshot.k8s_error) warns.push(side.snapshot.k8s_error);
+          document.getElementById(id + '-warn').innerHTML = warns.map(w => `<div class="status err">${escapeHtml(w)}</div>`).join('');
+          document.getElementById(id + '-body').innerHTML = (side.snapshot.pods || []).map(p =>
+            `<tr><td>${escapeHtml(p.name)}</td><td>${fmtMilli(p.cpu_usage_milli)}</td><td>${fmtBytes(p.mem_usage_bytes)}</td><td>${fmtMilli(p.cpu_request_milli)}</td><td>${fmtBytes(p.mem_request_bytes)}</td></tr>`
+          ).join('') || '<tr><td colspan="5">—</td></tr>';
+          document.getElementById(id + '-metrics').textContent = JSON.stringify(side.snapshot.agent_metrics || {}, null, 2);
+        });
+        setStatus(statusEl, 'Compare OK', 'ok');
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
+    }
+
+    document.getElementById('res-refresh-btn').addEventListener('click', () => loadResourcesSnapshot());
+    document.getElementById('res-compare-btn').addEventListener('click', () => compareResources());
+    document.getElementById('res-profile').addEventListener('change', updateProfilePreview);
+    document.getElementById('res-apply-btn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('res-apply-status');
+      const profile = document.getElementById('res-profile').value;
+      if (!confirm('Apply resource profile "' + profile + '" to namespace of selected agent? This patches Deployments and restarts them.')) {
+        return;
+      }
+      setStatus(statusEl, 'Applying…', 'waiting');
+      try {
+        const res = await fetch('/api/resources/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setStatus(statusEl, `Applied ${data.profile} · patched ${((data.patched)||[]).join(',')}`, 'ok');
+        await loadResourcesSnapshot();
+      } catch (e) {
+        setStatus(statusEl, e.message, 'err');
+      }
     });
 
     loadScenarios().catch(err => console.error(err));

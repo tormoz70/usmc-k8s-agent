@@ -1,0 +1,5 @@
+{
+  "accepted": false,
+  "message": "An agent is already registered for this cluster_id",
+  "reason": "AgentAlreadyRegistered"
+}

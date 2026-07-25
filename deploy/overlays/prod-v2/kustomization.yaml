@@ -1,0 +1,80 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PROD agent v2: Deployments + DaemonSet node-local logs.
+# Mutually exclusive with overlays/prod-v1 — install exactly one per cluster.
+resources:
+  - ../prod
+
+components:
+  - ../../components/logs-node
+
+patches:
+  - target:
+      kind: Deployment
+      name: agent-service
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-service
+      spec:
+        template:
+          spec:
+            containers:
+              - name: agent
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+                  - name: LOGS_BACKEND
+                    value: nodelocal
+                  - name: LOGS_NODE_HTTP_PORT
+                    value: "8083"
+  - target:
+      kind: Deployment
+      name: egress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: egress
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+  - target:
+      kind: Deployment
+      name: ingress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ingress
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2
+  - target:
+      kind: DaemonSet
+      name: logs-node-agent
+    patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: logs-node-agent
+      spec:
+        template:
+          spec:
+            containers:
+              - name: logs-node
+                env:
+                  - name: AGENT_IMPLEMENTATION
+                    value: v2

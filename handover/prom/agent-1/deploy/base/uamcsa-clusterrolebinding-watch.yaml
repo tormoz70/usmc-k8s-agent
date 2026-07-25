@@ -1,0 +1,16 @@
+# Cluster-scoped watch (Namespace) requires ClusterRoleBinding; namespaced watch
+# is also covered via namespace RoleBindings on k8s-agent / k8s-agent-watch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: uamcsa-watch
+  labels:
+    app.kubernetes.io/part-of: uamc-k8s-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-agent-watch
+subjects:
+  - kind: ServiceAccount
+    name: uamcsa
+    namespace: uamc-agent

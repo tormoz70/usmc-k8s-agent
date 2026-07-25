@@ -1,0 +1,46 @@
+# Default first target must match the agent you actually have deployed.
+# Local overlay (deploy/overlays/local) uses namespace uamc-agent + topic k8s.commands.request.
+# test-v1 / test-v2 only work after applying those overlays (separate namespaces + .v1/.v2 topics).
+targets:
+  - id: local
+    label: "Local agent (uamc-agent)"
+    button_label: "Local"
+    hint: "Local agent (default). Deploy: kubectl apply -k deploy/overlays/local - topic k8s.commands.request, ns uamc-agent"
+    implementation: v1
+    cluster_id: local
+    request_topic: k8s.commands.request
+    reply_topic: core-client.dev.responses
+    agent_namespace: uamc-agent
+    agent_http_url: http://host.docker.internal:8080
+    events_topic: cluster.events
+    logs_stream_topic: logs.stream
+    health_topic: cluster.health
+    lifecycle_topic: agent.lifecycle
+  - id: test-v1
+    label: "Agent 1 - v1 (GetLogs)"
+    button_label: "Agent 1"
+    hint: "Deploy first: kubectl apply -k deploy/overlays/test-v1 - topic k8s.commands.request.v1, ns uamc-agent-v1"
+    implementation: v1
+    cluster_id: test-v1
+    request_topic: k8s.commands.request.v1
+    reply_topic: core-client.dev.responses
+    agent_namespace: uamc-agent-v1
+    agent_http_url: http://host.docker.internal:8080
+    events_topic: cluster.events
+    logs_stream_topic: logs.stream
+    health_topic: cluster.health
+    lifecycle_topic: agent.lifecycle
+  - id: test-v2
+    label: "Agent 2 - v2 (DaemonSet)"
+    button_label: "Agent 2"
+    hint: "Deploy first: kubectl apply -k deploy/overlays/test-v2 - topic k8s.commands.request.v2, ns uamc-agent-v2 (+ DaemonSet logs-node)"
+    implementation: v2
+    cluster_id: test-v2
+    request_topic: k8s.commands.request.v2
+    reply_topic: core-client.dev.responses
+    agent_namespace: uamc-agent-v2
+    agent_http_url: http://host.docker.internal:8080
+    events_topic: cluster.events
+    logs_stream_topic: logs.stream
+    health_topic: cluster.health
+    lifecycle_topic: agent.lifecycle

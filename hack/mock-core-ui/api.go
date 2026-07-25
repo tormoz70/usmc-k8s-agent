@@ -17,14 +17,38 @@ import (
 )
 
 type server struct {
-	cfg   config
-	modes *agentModeController
+	cfg       config
+	modes     *agentModeController
+	targets   *targetRegistry
+	resources *resourcesController
 }
 
 func newServer(cfg config) *server {
+	fallback := agentTarget{
+		ID:              "default",
+		Label:           "Default agent",
+		Implementation:  "v1",
+		ClusterID:       "local",
+		RequestTopic:    cfg.RequestTopic,
+		ReplyTopic:      cfg.ReplyTopic,
+		AgentNamespace:  cfg.AgentNamespace,
+		AgentHTTPURL:    cfg.AgentHTTPURL,
+		EventsTopic:     "cluster.events",
+		LogsStreamTopic: "logs.stream",
+		HealthTopic:     "cluster.health",
+		LifecycleTopic:  "agent.lifecycle",
+	}
+	reg, err := loadTargets(cfg.TargetsFile, fallback)
+	if err != nil {
+		slog.Warn("targets load failed; using default", "error", err)
+		reg, _ = loadTargets("", fallback)
+	}
+	modes := newAgentModeController(cfg)
 	return &server{
-		cfg:   cfg,
-		modes: newAgentModeController(cfg),
+		cfg:       cfg,
+		modes:     modes,
+		targets:   reg,
+		resources: newResourcesController(cfg, modes),
 	}
 }
 
@@ -49,11 +73,68 @@ func (s *server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	t, err := s.targets.Current()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	topics := t.MonitorTopics()
+	if len(topics) == 0 {
+		topics = s.cfg.DefaultTopics
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"topics":       s.cfg.DefaultTopics,
-		"reply_topic":  s.cfg.ReplyTopic,
-		"request_topic": s.cfg.RequestTopic,
+		"topics":        topics,
+		"reply_topic":   t.ReplyTopic,
+		"request_topic": t.RequestTopic,
+		"target_id":     t.ID,
 	})
+}
+
+func (s *server) handleTargets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cur, _ := s.targets.Current()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"targets":     s.targets.List(),
+		"selected_id": cur.ID,
+		"selected":    cur,
+	})
+}
+
+func (s *server) handleTargetSelect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("id is required"))
+		return
+	}
+	t, err := s.targets.Select(req.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// Keep Agent Mode / inventory scoped to the selected agent namespace.
+	s.cfg.AgentNamespace = t.AgentNamespace
+	if t.AgentHTTPURL != "" {
+		s.cfg.AgentHTTPURL = t.AgentHTTPURL
+	}
+	s.modes.cfg.AgentNamespace = t.AgentNamespace
+	s.resources.cfg.AgentNamespace = t.AgentNamespace
+	s.resources.cfg.AgentHTTPURL = s.cfg.AgentHTTPURL
+	slog.Info("agent target selected", "id", t.ID, "implementation", t.Implementation, "request_topic", t.RequestTopic, "namespace", t.AgentNamespace)
+	writeJSON(w, http.StatusOK, map[string]any{"selected": t})
 }
 
 type templateInfo struct {
@@ -125,16 +206,60 @@ func (s *server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	replyTopic := req.ReplyTopic
 	if replyTopic == "" {
-		replyTopic = s.cfg.ReplyTopic
+		if t, err := s.targets.Current(); err == nil && t.ReplyTopic != "" {
+			replyTopic = t.ReplyTopic
+		} else {
+			replyTopic = s.cfg.ReplyTopic
+		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	requestTopic := s.cfg.RequestTopic
+	if t, err := s.targets.Current(); err == nil && t.RequestTopic != "" {
+		requestTopic = t.RequestTopic
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	result, err := mockcorelib.SendCommand(ctx, s.cfg.Brokers, s.cfg.RequestTopic, replyTopic, req.Body)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+	sentAt := time.Now().UTC()
+	result, reply, waitErr := mockcorelib.SendAndWait(ctx, s.cfg.Brokers, requestTopic, replyTopic, req.Body, 45*time.Second)
+	receivedAt := time.Now().UTC()
+	if result.CorrelationID == "" && waitErr != nil {
+		writeError(w, http.StatusBadGateway, waitErr)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	timing := map[string]any{
+		"sent_at":     sentAt,
+		"received_at": receivedAt,
+		"duration_ms": receivedAt.Sub(sentAt).Milliseconds(),
+	}
+	if waitErr != nil {
+		timing["timed_out"] = true
+		timing["wait_error"] = waitErr.Error()
+	}
+
+	resp := map[string]any{
+		"correlation_id": result.CorrelationID,
+		"reply_topic":    result.ReplyTopic,
+		"request_topic":  result.RequestTopic,
+		"timing":         timing,
+	}
+	if t, err := s.targets.Current(); err == nil {
+		resp["target_id"] = t.ID
+		resp["implementation"] = t.Implementation
+	}
+	if waitErr == nil {
+		var replyBody any
+		if json.Unmarshal(reply.Body, &replyBody) == nil {
+			resp["reply"] = map[string]any{
+				"headers": reply.Headers,
+				"body":    replyBody,
+			}
+		} else {
+			resp["reply"] = map[string]any{
+				"headers": reply.Headers,
+				"body":    string(reply.Body),
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) handleMessageStream(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +425,88 @@ func (s *server) handleAgentMode(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
 		result, err := s.modes.applyMode(ctx, req.Mode)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *server) handleResourcesProfiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": resourceProfiles()})
+}
+
+func (s *server) handleResourcesSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ns := r.URL.Query().Get("namespace")
+	targetID := ""
+	httpURL := s.cfg.AgentHTTPURL
+	if ns == "" {
+		if t, err := s.targets.Current(); err == nil {
+			ns = t.AgentNamespace
+			targetID = t.ID
+			if t.AgentHTTPURL != "" {
+				httpURL = t.AgentHTTPURL
+			}
+		} else {
+			ns = s.cfg.AgentNamespace
+		}
+	} else if t, err := s.targets.Current(); err == nil {
+		targetID = t.ID
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, s.resources.snapshot(ctx, ns, targetID, httpURL))
+}
+
+func (s *server) handleResourcesCompare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	type side struct {
+		Target   agentTarget        `json:"target"`
+		Snapshot *resourcesSnapshot `json:"snapshot"`
+	}
+	var sides []side
+	for _, t := range s.targets.List() {
+		url := t.AgentHTTPURL
+		if url == "" {
+			url = s.cfg.AgentHTTPURL
+		}
+		sides = append(sides, side{
+			Target:   t,
+			Snapshot: s.resources.snapshot(ctx, t.AgentNamespace, t.ID, url),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sides": sides})
+}
+
+func (s *server) handleResourcesProfile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"profiles": resourceProfiles()})
+	case http.MethodPost:
+		var req applyResourceProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		result, err := s.resources.applyProfile(ctx, strings.TrimSpace(req.Profile))
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return

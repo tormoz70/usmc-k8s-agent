@@ -1,0 +1,5 @@
+# Generated / local secrets — do not commit real TLS material
+**/secrets/*.crt
+**/secrets/*.key
+**/secrets/*.pem
+!**/secrets/*.placeholder

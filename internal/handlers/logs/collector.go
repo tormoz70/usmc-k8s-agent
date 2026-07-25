@@ -15,17 +15,20 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/usmc/usmc-k8s-agent/internal/config"
+	"github.com/usmc/usmc-k8s-agent/internal/nodelocal"
 	"github.com/usmc/usmc-k8s-agent/internal/result"
 	s3client "github.com/usmc/usmc-k8s-agent/internal/s3"
 )
 
 // Collector gathers pod logs, builds a zip bundle and uploads to S3.
 type Collector struct {
-	kube      kubernetes.Interface
-	s3        *s3client.Client
+	kube       kubernetes.Interface
+	s3         *s3client.Client
 	s3Defaults config.S3Config
-	maxBytes  int64
-	tempRoot  string
+	maxBytes   int64
+	tempRoot   string
+	backend    string
+	nodeClient *nodelocal.NodeClient
 }
 
 func NewCollector(kube kubernetes.Interface, s3 *s3client.Client, s3Defaults config.S3Config, maxBytes int64, tempRoot string) *Collector {
@@ -38,7 +41,15 @@ func NewCollector(kube kubernetes.Interface, s3 *s3client.Client, s3Defaults con
 		s3Defaults: s3Defaults,
 		maxBytes:   maxBytes,
 		tempRoot:   tempRoot,
+		backend:    config.LogsBackendAPI,
 	}
+}
+
+// WithNodeLocal enables fan-out to logs-node-agent DaemonSet pods.
+func (c *Collector) WithNodeLocal(client *nodelocal.NodeClient) *Collector {
+	c.backend = config.LogsBackendNodeLocal
+	c.nodeClient = client
+	return c
 }
 
 type CollectResult struct {
@@ -90,7 +101,7 @@ func (c *Collector) Run(ctx context.Context, payload *CollectPayload) (*CollectR
 					return nil, err
 				}
 
-				written, err := c.writePodLogs(ctx, pod.Namespace, pod.Name, container, state.previous, payload, fullPath)
+				written, err := c.writePodLogs(ctx, pod, container, state.previous, payload, fullPath)
 				if err != nil {
 					partial = append(partial, result.PartialError{
 						Pod:       pod.Name,
@@ -202,7 +213,42 @@ func (c *Collector) listPods(ctx context.Context, payload *CollectPayload) ([]co
 	return list.Items, nil
 }
 
-func (c *Collector) writePodLogs(ctx context.Context, namespace, pod, container string, previous bool, payload *CollectPayload, dest string) (int64, error) {
+func (c *Collector) writePodLogs(ctx context.Context, pod corev1.Pod, container string, previous bool, payload *CollectPayload, dest string) (int64, error) {
+	if c.backend == config.LogsBackendNodeLocal && c.nodeClient != nil {
+		return c.writePodLogsNodeLocal(ctx, pod, container, previous, payload, dest)
+	}
+	return c.writePodLogsAPI(ctx, pod.Namespace, pod.Name, container, previous, payload, dest)
+}
+
+func (c *Collector) writePodLogsNodeLocal(ctx context.Context, pod corev1.Pod, container string, previous bool, payload *CollectPayload, dest string) (int64, error) {
+	node := pod.Spec.NodeName
+	if node == "" {
+		return 0, fmt.Errorf("pod %s has no nodeName", pod.Name)
+	}
+	stream, err := c.nodeClient.Fetch(ctx, node, nodelocal.FetchRequest{
+		Namespace:  pod.Namespace,
+		Pod:        pod.Name,
+		PodUID:     string(pod.UID),
+		Container:  container,
+		Previous:   previous,
+		SinceTime:  payload.SinceTime,
+		TailLines:  payload.TailLines,
+		LimitBytes: payload.LimitBytes,
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer stream.Close()
+
+	f, err := os.Create(dest)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return io.Copy(f, stream)
+}
+
+func (c *Collector) writePodLogsAPI(ctx context.Context, namespace, pod, container string, previous bool, payload *CollectPayload, dest string) (int64, error) {
 	opts := &corev1.PodLogOptions{Container: container, Previous: previous}
 	if payload.SinceTime != nil {
 		t := payload.SinceTime.UTC()

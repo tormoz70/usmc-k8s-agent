@@ -1,13 +1,18 @@
 # Expose k8s-agent ingress HTTP on localhost:8080 for mock-core-ui REST scenarios.
-# Usage: powershell -File hack/port-forward-agent-http.ps1
+# Prefer kube Service proxy from mock-core-ui (Resources / REST scenarios) — port-forward is optional.
+# Usage:
+#   powershell -File hack/port-forward-agent-http.ps1
+#   powershell -File hack/port-forward-agent-http.ps1 -Namespace uamc-agent-v1
+param(
+    [string]$Namespace = "uamc-agent",
+    [int]$LocalPort = 8080
+)
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $PidFile = Join-Path $Root "hack\.agent-http-pf.pid"
 $LogFile = Join-Path $Root "hack\.agent-http-pf.log"
-$Namespace = "uamc-agent"
 $Service = "svc/k8s-agent-http"
-$LocalPort = 8080
 
 function Stop-ExistingForward {
     if (Test-Path $PidFile) {

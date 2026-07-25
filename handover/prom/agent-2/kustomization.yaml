@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Handover entrypoint for PROD Agent 2 (v2 / DaemonSet nodelocal).
+# 1) Edit site-values-patch.yaml
+# 2) Replace secrets under deploy/overlays/prod/
+# 3) Set image below (Deployments + DaemonSet)
+# 4) kubectl apply -k .
+
+resources:
+  - deploy/overlays/prod-v2
+
+patches:
+  - path: site-values-patch.yaml
+
+images:
+  - name: k8s-agent
+    newName: registry.example.com/uamc/k8s-agent
+    newTag: "CHANGE-ME-VERSION"
